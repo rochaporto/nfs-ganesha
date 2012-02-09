@@ -50,23 +50,28 @@
 #endif
 
 /*
- * Structure of the filehandle 
+ * Structure of the filehandle
+ * these structures must be naturally aligned.  The xdr buffer from/to which
+ * they come/go are 4 byte aligned.
  */
 
 /* This must be exactly 32 bytes long, and aligned on 32 bits */
 typedef struct file_handle_v2__
 {
-  unsigned short exportid;      /* must be correlated to exportlist_t::id   len = 2 bytes  */
-  char fsopaque[29];            /* persistent part of FSAL handle, opaque   len = 25 bytes */
+  unsigned char fhversion;	/* set to 0x41 to separate from Linux knfsd len = 1 byte */
   char xattr_pos;               /* Used for xattr management                len = 1  byte  */
+  unsigned short exportid;      /* must be correlated to exportlist_t::id   len = 2 bytes  */
+  char fsopaque[28];            /* persistent part of FSAL handle, opaque   len = 28 bytes */
 } file_handle_v2_t;
 
 /* This is up to 64 bytes long, aligned on 32 bits */
 typedef struct file_handle_v3__
 {
-  unsigned short exportid;      /* must be correlated to exportlist_t::id   len = 2 bytes   */
-  char fsopaque[61];            /* persistent part of FSAL handle, opaque   len = 41 bytes  */
+  unsigned char fhversion;	/* set to 0x41 to separate from Linux knfsd len = 1 byte */
   char xattr_pos;               /* Used for xattr management                len = 1  byte  */
+  unsigned short exportid;      /* must be correlated to exportlist_t::id   len = 2 bytes   */
+  unsigned char fs_len;         /* actual length of handle                  len = 1  byte */
+  char fsopaque[];              /* persistent part of FSAL handle, opaque   len <= 59 bytes  */
 } file_handle_v3_t;
 
 
@@ -74,18 +79,16 @@ typedef struct file_handle_v3__
 /* This must be up to 128 bytes, aligned on 32 bits */
 typedef struct file_handle_v4__
 {
+  unsigned char fhversion;	/* set to 0x41 to separate from Linux knfsd len = 1 byte */
+  char xattr_pos;               /*                                          len = 1 byte    */
+  unsigned short exportid;      /* must be correlated to exportlist_t::id   len = 2 bytes   */
+  unsigned int srvboot_time;    /* 0 if FH won't expire                     len = 4 bytes   */
   unsigned short pseudofs_id;   /* Id for the pseudo fs related to this fh  len = 2 bytes   */
+  unsigned short refid;         /* used for referral                        len = 2 bytes   */
   unsigned char ds_flag;        /* TRUE if FH is a 'DS file handle'         len = 1 byte    */
   unsigned char pseudofs_flag;  /* TRUE if FH is within pseudofs            len = 1 byte    */
-  unsigned int exportid;        /* must be correlated to exportlist_t::id   len = 4 bytes   */
-  unsigned short refid;         /* used for referral                        len = 2 bytes   */
-  unsigned int srvboot_time;    /* 0 if FH won't expire                     len = 4 bytes   */
-#ifdef _USE_PROXY
-  char fsopaque[108];            /* persistent part of FSAL handle */
-#else
-  char fsopaque[69];            /* persistent part of FSAL handle */
-#endif /* _USE_FSAL_PROXY */
-  char xattr_pos;               /*                                          len = 1 byte    */
+  unsigned char fs_len;         /* actual length of handle                  len = 1  byte */
+  char fsopaque[];              /* persistent part of FSAL handle           len <= 113 bytes */
 } file_handle_v4_t;
 
 #define LEN_FH_STR 1024

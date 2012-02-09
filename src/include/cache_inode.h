@@ -370,7 +370,7 @@ typedef struct cache_inode_parent_entry__ cache_inode_parent_entry_t;
 
 typedef struct cache_inode_fsal_data__
 {
-  struct fsal_obj_handle *handle;                         /**< FSAL handle           */
+  struct fsal_handle_desc handle;               /**< describes the request handle */
   uint64_t cookie;                              /**< Cache inode cookie    */
 } cache_inode_fsal_data_t;
 
