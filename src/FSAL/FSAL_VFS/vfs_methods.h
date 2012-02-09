@@ -1,5 +1,16 @@
 /* VFS methods
  */
+/* method proto linkage to handle.c
+ */
+
+fsal_status_t vfs_lookup_path(struct fsal_export *exp_hdl,
+			      fsal_path_t *path,
+			      struct fsal_obj_handle **handle);
+
+fsal_status_t vfs_create_handle(struct fsal_export *exp_hdl,
+				fsal_digesttype_t in_type,
+				caddr_t in_buff,
+				struct fsal_obj_handle **handle);
 
 /*
  * VFS internal object handle
