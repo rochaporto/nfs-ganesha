@@ -42,6 +42,7 @@
 #include "fsal_convert.h"
 #include "FSAL/fsal_commonlib.h"
 #include "FSAL/fsal_config.h"
+#include "vfs_methods.h"
 
 /*
  * VFS internal export
@@ -402,17 +403,44 @@ err:
 	ReturnCode(fsal_error, retval);	
 }
 
-/* method proto linkage to handle.c
+/* extract a file handle from a buffer.
+ * do verification checks and flag any and all suspicious bits.
+ * I know that this should be a struct file_handle.
  */
 
-fsal_status_t vfs_lookup_path(struct fsal_export *exp_hdl,
-			      fsal_path_t *path,
-			      struct fsal_obj_handle **handle);
-
-fsal_status_t vfs_create_handle(struct fsal_export *exp_hdl,
-				fsal_digesttype_t in_type,
-				caddr_t in_buff,
-				struct fsal_obj_handle **handle);
+fsal_status_t extract_handle(struct fsal_export *exp_hdl,
+					fsal_digesttype_t in_type,
+					caddr_t in_buff,
+					uint size,
+					struct fsal_handle_desc *hdl_desc)
+{
+	switch (in_type) {
+	case FSAL_DIGEST_NFSV2:  /* NFSV2 handle digest */
+		if(handle_size < FSAL_DIGEST_SIZE_HDLV2) {
+			fsal_error = ERR_FSAL_TOOSMALL;
+			goto errout;
+		}
+		memcpy(fh, in_buff, FSAL_DIGEST_SIZE_HDLV2);
+		break;
+	case FSAL_DIGEST_NFSV3:  /* NFSV3 handle digest */
+		if(handle_size < FSAL_DIGEST_SIZE_HDLV3) {
+			fsal_error = ERR_FSAL_TOOSMALL;
+			goto errout;
+		}
+		memcpy(fh, in_buff, FSAL_DIGEST_SIZE_HDLV3);
+		break;
+	case FSAL_DIGEST_NFSV4:  /* NFSV4 handle digest */
+		if(handle_size < FSAL_DIGEST_SIZE_HDLV4) {
+			fsal_error = ERR_FSAL_TOOSMALL;
+			goto errout;
+		}
+		memcpy(fh, in_buff, FSAL_DIGEST_SIZE_HDLV4);
+		break;
+	default:
+		fsal_error = ERR_FSAL_SERVERFAULT;
+		goto errout;
+	}
+}
 
 /* NOP methods
  */
@@ -430,6 +458,7 @@ static struct export_ops exp_ops = {
 	.release = release,
 	.lookup_path = vfs_lookup_path,
 	.lookup_junction = lookup_junction,
+	.extract_handle = extract_handle,
 	.create_handle = vfs_create_handle,
 	.get_fs_dynamic_info = get_dynamic_info,
 	.fs_supports = fs_supports,
