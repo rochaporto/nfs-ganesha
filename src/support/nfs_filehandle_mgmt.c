@@ -159,7 +159,7 @@ int nfs4_FhandleToFSAL(nfs_fh4 * pfh4,
   pexport = nfs_Get_export_by_id(nfs_param.pexportlist, exportid);
   exp_hdl = pexport->export_hdl;
 
-  fsal_status = exp_hdl->ops->create_handle(exp_hdl,
+  fsal_status = exp_hdl->ops->extract_handle(exp_hdl,
 					    FSAL_DIGEST_NFSV4,
 					    (caddr_t) &(pfile_handle->fsopaque),
 					    pfsalhandle);
