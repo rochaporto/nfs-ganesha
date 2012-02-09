@@ -82,8 +82,6 @@ struct fsal_export {
 	struct export_ops *ops;
 };
 
-struct fsal_obj_handle;
-
 struct export_ops {
 	/* export management */
 	void (*get)(struct fsal_export *exp_hdl);
@@ -97,9 +95,13 @@ struct export_ops {
 	fsal_status_t (*lookup_junction)(struct fsal_export *exp_hdl,
 				struct fsal_obj_handle *junction,
 				struct fsal_obj_handle **handle);
+	fsal_status_t (*extract_handle)(struct fsal_export *exp_hdl,
+					fsal_digesttype_t in_type,
+					caddr_t in_buff,
+					uint size,
+					struct fsal_handle_desc *hdl_desc);
 	fsal_status_t (*create_handle)(struct fsal_export *exp_hdl,
-				       fsal_digesttype_t in_type,
-				       caddr_t in_buff,
+				       struct fsal_handle_desc *hdl_desc,
 				       struct fsal_obj_handle **handle);
 
 	/* statistics and configuration access */
