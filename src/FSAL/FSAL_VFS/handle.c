@@ -1374,52 +1374,26 @@ errout:
  */
 
 fsal_status_t vfs_create_handle(struct fsal_export *exp_hdl,
-			       fsal_digesttype_t in_type,
-			       caddr_t in_buff,
-			       struct fsal_obj_handle **handle)
+				struct fsal_handle_desc *hdl_desc,
+				struct fsal_obj_handle **handle)
 {
 	struct vfs_fsal_obj_handle *hdl;
-	size_t handle_size;
+	struct stat stat;
+	struct file_handle  *fh;
 	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
 	int retval = 0;
 	int fd;
 	int mount_fd = vfs_get_root_fd(exp_hdl);
 
-	struct stat stat;
-	struct file_handle  *fh
-		= alloca(sizeof(struct file_handle) + MAX_HANDLE_SZ);
+	
 
 	*handle = NULL; /* poison it first */
-	if(in_buff == NULL)
+	if((hdl_desc->len > (sizeof(struct file_handle) + MAX_HANDLE_SZ)) ||
+	    ((struct file_handle *)(hdl_desc->start)->handle_bytes >  MAX_HANDLE_SZ))
 		ReturnCode(ERR_FSAL_FAULT, 0);
-	handle_size = sizeof(struct file_handle) + MAX_HANDLE_SZ;
-	memset(fh, 0, handle_size);
-	switch (in_type) {
-	case FSAL_DIGEST_NFSV2:  /* NFSV2 handle digest */
-		if(handle_size < FSAL_DIGEST_SIZE_HDLV2) {
-			fsal_error = ERR_FSAL_TOOSMALL;
-			goto errout;
-		}
-		memcpy(fh, in_buff, FSAL_DIGEST_SIZE_HDLV2);
-		break;
-	case FSAL_DIGEST_NFSV3:  /* NFSV3 handle digest */
-		if(handle_size < FSAL_DIGEST_SIZE_HDLV3) {
-			fsal_error = ERR_FSAL_TOOSMALL;
-			goto errout;
-		}
-		memcpy(fh, in_buff, FSAL_DIGEST_SIZE_HDLV3);
-		break;
-	case FSAL_DIGEST_NFSV4:  /* NFSV4 handle digest */
-		if(handle_size < FSAL_DIGEST_SIZE_HDLV4) {
-			fsal_error = ERR_FSAL_TOOSMALL;
-			goto errout;
-		}
-		memcpy(fh, in_buff, FSAL_DIGEST_SIZE_HDLV4);
-		break;
-	default:
-		fsal_error = ERR_FSAL_SERVERFAULT;
-		goto errout;
-	}
+
+	fh = alloca(hdl_desc->len);
+	memcpy(fh, hdl_desc->start, hdl_desc->len);  /* struct aligned copy */
 	fd = open_by_handle_at(mount_fd, fh, O_PATH|O_NOACCESS);
 	if(fd < 0) {
 		fsal_error = posix2fsal_error(errno);
