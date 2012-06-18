@@ -316,7 +316,7 @@ do                                             \
 {                                              \
   __pvar=(__type *)__cursor ;                  \
   __cursor += sizeof( __type ) ;               \
-} while( 0 ) 
+} while( 0 )
 
 #define _9p_getstr( __cursor, __len, __str ) \
 do                                           \
@@ -325,7 +325,7 @@ do                                           \
   __cursor += sizeof( u16 ) ;                \
   __str = __cursor ;                         \
   __cursor += *__len ;                       \
-} while( 0 )                           
+} while( 0 )
 
 #define _9p_setptr( __cursor, __pvar, __type ) \
 do                                             \
