@@ -24,15 +24,10 @@
  */
 
 /**
- * \file    nfs_proto_tools.c
- * \author  $Author: leibovic $
- * \date    $Date: 2006/01/31 10:06:00 $
- * \version $Revision: 1.48 $
- * \brief   A set of functions used to managed NFS.
+ * @file    nfs_proto_tools.c
+ * @brief   A set of functions used to managed NFS.
  *
- * nfs_proto_tools.c -  A set of functions used to managed NFS.
- *
- *
+ * A set of functions used to managed NFS.
  */
 #ifdef HAVE_CONFIG_H
 #include "config.h"
@@ -823,15 +818,9 @@ static int fsal_time_to_settime4(const fsal_time_t *ts, char *attrval)
 
 int nfs4_supported_attrs_to_fattr(char *attrvalsBuffer)
 {
-#ifdef _USE_NFS4_1
   int lastbit = FATTR4_FS_CHARSET_CAP;
   unsigned int attrvalslist_supported[FATTR4_FS_CHARSET_CAP];
   uint32_t bitmap_val[3];
-#else
-  int lastbit = FATTR4_MOUNTED_ON_FILEID;
-  unsigned int attrvalslist_supported[FATTR4_MOUNTED_ON_FILEID];
-  uint32_t bitmap_val[2];
-#endif
   int LastOffset = 0;
   fattr4_supported_attrs supported_attrs;
   uint32_t supported_attrs_len;
@@ -997,13 +986,8 @@ int nfs4_FSALattr_To_Fattr(exportlist_t *pexport,
   u_int len = 0, off = 0;       /* Use for XDR alignment */
   int op_attr_success = 0;
 
-#ifdef _USE_NFS4_1
   uint32_t attrmasklist[FATTR4_FS_CHARSET_CAP]; /* List cannot be longer than FATTR4_FS_CHARSET_CAP */
   uint32_t attrvalslist[FATTR4_FS_CHARSET_CAP]; /* List cannot be longer than FATTR4_FS_CHARSET_CAP */
-#else
-  uint32_t attrmasklist[FATTR4_MOUNTED_ON_FILEID];      /* List cannot be longer than FATTR4_MOUNTED_ON_FILEID */
-  uint32_t attrvalslist[FATTR4_MOUNTED_ON_FILEID];      /* List cannot be longer than FATTR4_MOUNTED_ON_FILEID */
-#endif
   uint32_t attrmasklen = 0;
   char attrvalsBuffer[ATTRVALS_BUFFLEN];
 
@@ -1022,13 +1006,8 @@ int nfs4_FSALattr_To_Fattr(exportlist_t *pexport,
 
   /* basic init */
   memset(attrvalsBuffer, 0, NFS4_ATTRVALS_BUFFLEN);
-#ifdef _USE_NFS4_1
-  memset((uint32_t *) attrmasklist, 0, FATTR4_FS_CHARSET_CAP * sizeof(uint32_t));
-  memset((uint32_t *) attrvalslist, 0, FATTR4_FS_CHARSET_CAP * sizeof(uint32_t));
-#else
-  memset((uint32_t *) attrmasklist, 0, FATTR4_MOUNTED_ON_FILEID * sizeof(uint32_t));
-  memset((uint32_t *) attrvalslist, 0, FATTR4_MOUNTED_ON_FILEID * sizeof(uint32_t));
-#endif
+  memset(attrmasklist, 0, FATTR4_FS_CHARSET_CAP * sizeof(uint32_t));
+  memset(attrvalslist, 0, FATTR4_FS_CHARSET_CAP * sizeof(uint32_t));
 
   /* Convert the attribute bitmap to an attribute list */
   nfs4_bitmap4_to_list(Bitmap, &attrmasklen, attrmasklist);
@@ -1041,11 +1020,7 @@ int nfs4_FSALattr_To_Fattr(exportlist_t *pexport,
     {
       attribute_to_set = attrmasklist[i];
 
-#ifdef _USE_NFS4_1
       if(attrmasklist[i] > FATTR4_FS_CHARSET_CAP)
-#else
-      if(attrmasklist[i] > FATTR4_MOUNTED_ON_FILEID)
-#endif
         {
           /* Erroneous value... skip */
           continue;
@@ -1713,7 +1688,6 @@ int nfs4_FSALattr_To_Fattr(exportlist_t *pexport,
           op_attr_success = 1;
           break;
 
-#ifdef _USE_NFS4_1
         case FATTR4_FS_LAYOUT_TYPES:
 #ifdef _PNFS_MDS
           *((uint32_t*)(attrvalsBuffer+LastOffset))
@@ -1745,7 +1719,6 @@ int nfs4_FSALattr_To_Fattr(exportlist_t *pexport,
           op_attr_success = 1;
           break;
 #endif /* _PNFS_MDS */
-#endif /* _USE_NFS4_1 */
 
         default:
           LogFullDebug(COMPONENT_NFS_V4,
@@ -2289,11 +2262,7 @@ void nfs4_bitmap4_to_list(const bitmap4 * b, uint_t * plen, uint32_t * pval)
       for(i = 0; i < 32; i++)
         {
           fattr4tabidx = i+32*offset;
-#ifdef _USE_NFS4_1
           if (fattr4tabidx > FATTR4_FS_CHARSET_CAP)
-#else
-          if (fattr4tabidx > FATTR4_MOUNTED_ON_FILEID)
-#endif
              goto exit;
 
           val = 1 << i;         /* Compute 2**i */
@@ -2691,11 +2660,7 @@ int nfs4_Fattr_Check_Access(fattr4 * Fattr, int access)
 
   for(i = 0; i < attrmasklen; i++)
     {
-#ifdef _USE_NFS4_1
       if(attrmasklist[i] > FATTR4_FS_CHARSET_CAP)
-#else
-      if(attrmasklist[i] > FATTR4_MOUNTED_ON_FILEID)
-#endif
         {
           /* Erroneous value... skip */
           continue;
@@ -2724,11 +2689,7 @@ int nfs4_Fattr_Check_Access(fattr4 * Fattr, int access)
 int nfs4_Fattr_Check_Access_Bitmap(bitmap4 * pbitmap, int access)
 {
   unsigned int i = 0;
-#ifdef _USE_NFS4_1
 #define MAXATTR FATTR4_FS_CHARSET_CAP
-#else
-#define MAXATTR FATTR4_MOUNTED_ON_FILEID
-#endif
   uint32_t attrmasklist[MAXATTR];
   uint32_t attrmasklen = 0;
 
@@ -2797,11 +2758,7 @@ int nfs4_bitmap4_Remove_Unsupported(bitmap4 * pbitmap )
       for(i = 0; i < 32; i++)
         {
           fattr4tabidx = i+32*offset;
-#ifdef _USE_NFS4_1
           if (fattr4tabidx > FATTR4_FS_CHARSET_CAP)
-#else
-          if (fattr4tabidx > FATTR4_MOUNTED_ON_FILEID)
-#endif
              goto exit;
 
           val = 1 << i;         /* Compute 2**i */
@@ -2850,14 +2807,6 @@ int nfs4_Fattr_Supported(fattr4 * Fattr)
   for(i = 0; i < attrmasklen; i++)
     {
 
-#ifndef _USE_NFS4_1
-      if(attrmasklist[i] > FATTR4_MOUNTED_ON_FILEID)
-        {
-          /* Erroneous value... skip */
-          continue;
-        }
-#endif
-
       LogFullDebug(COMPONENT_NFS_V4,
                    "nfs4_Fattr_Supported  ==============> %s supported flag=%u | ",
                    fattr4tab[attrmasklist[i]].name, fattr4tab[attrmasklist[i]].supported);
@@ -2898,14 +2847,6 @@ int nfs4_Fattr_Supported_Bitmap(bitmap4 * pbitmap)
   for(i = 0; i < attrmasklen; i++)
     {
 
-#ifndef _USE_NFS4_1
-      if(attrmasklist[i] > FATTR4_MOUNTED_ON_FILEID)
-        {
-          /* Erroneous value... skip */
-          continue;
-        }
-#endif
-      
       LogFullDebug(COMPONENT_NFS_V4,
                    "nfs4_Fattr_Supported  ==============> %s supported flag=%u",
                    fattr4tab[attrmasklist[i]].name,
@@ -3262,7 +3203,6 @@ int nfs4_attrmap_to_FSAL_attrmask(bitmap4 attrmap, fsal_attrib_mask_t* attrmask)
 {
   unsigned int offset = 0;
   unsigned int i = 0;
-  char __attribute__ ((__unused__)) funcname[] = "nfs4_FattrToSattr";
 
   for(offset = 0; offset < attrmap.bitmap4_len; offset++)
     {
@@ -3438,11 +3378,7 @@ int Fattr4_To_FSAL_attr(fsal_attrib_list_t * pFSAL_attr, fattr4 * Fattr, nfs_fh4
     {
       attribute_to_set = attrmasklist[i];
 
-#ifdef _USE_NFS4_1
       if(attrmasklist[i] > FATTR4_FS_CHARSET_CAP)
-#else
-      if(attrmasklist[i] > FATTR4_MOUNTED_ON_FILEID)
-#endif
         {
           /* Erroneous value... skip */
           continue;
@@ -4173,8 +4109,6 @@ nfsstat2 nfs2_Errno(cache_inode_status_t error)
  */
 int nfs3_AllocateFH(nfs_fh3 *fh)
 {
-  char __attribute__ ((__unused__)) funcname[] = "AllocateFH3";
-
   if(fh == NULL)
     return NFS3ERR_SERVERFAULT;
 
@@ -4192,20 +4126,18 @@ int nfs3_AllocateFH(nfs_fh3 *fh)
 }                               /* nfs4_AllocateFH */
 
 /**
- * 
+ *
  * nfs4_AllocateFH: Allocates a buffer to be used for storing a NFSv4 filehandle.
- * 
+ *
  * Allocates a buffer to be used for storing a NFSv4 filehandle.
  *
  * @param fh [INOUT] the filehandle to manage.
- * 
+ *
  * @return NFS4_OK if successful, NFS3ERR_SERVERFAULT, NFS4ERR_RESOURCE or NFS4ERR_STALE  otherwise.
  *
  */
 int nfs4_AllocateFH(nfs_fh4 * fh)
 {
-  char __attribute__ ((__unused__)) funcname[] = "AllocateFH4";
-
   if(fh == NULL)
     return NFS4ERR_SERVERFAULT;
 
@@ -4384,56 +4316,57 @@ void nfs4_access_debug(char *label, uint32_t access, fsal_aceperm_t v4mask)
  * @return NFSv4.1 status codes
  */
 
-nfsstat4 nfs4_sanity_check_FH(compound_data_t *data,
-                              cache_inode_file_type_t required_type)
+nfsstat4
+nfs4_sanity_check_FH(compound_data_t *data,
+                     cache_inode_file_type_t required_type)
 {
-  /* If there is no FH */
-  if(nfs4_Is_Fh_Empty(&(data->currentFH)))
-    {
-      LogDebug(COMPONENT_FILEHANDLE,
-               "nfs4_Is_Fh_Empty failed");
-      return NFS4ERR_NOFILEHANDLE;
-    }
-
-  /* If the filehandle is invalid */
-  if(nfs4_Is_Fh_Invalid(&(data->currentFH)))
-    {
-      LogDebug(COMPONENT_FILEHANDLE,
-               "nfs4_Is_Fh_Invalid failed");
-      return NFS4ERR_BADHANDLE;
-    }
-
-  /* Tests if the Filehandle is expired (for volatile filehandle) */
-  if(nfs4_Is_Fh_Expired(&(data->currentFH)))
-    {
-      LogDebug(COMPONENT_FILEHANDLE,
-               "nfs4_Is_Fh_Expired failed");
-      return NFS4ERR_FHEXPIRED;
-    }
-
-  /* Check for the correct file type */
-  if (required_type)
-    {
-      if(data->current_filetype != required_type)
-        {
-          LogDebug(COMPONENT_NFSPROTO,
-                   "Wrong file type");
-
-          if(required_type == DIRECTORY)
-            return NFS4ERR_NOTDIR;
-          if(required_type == SYMBOLIC_LINK)
-            return NFS4ERR_INVAL;
-
-          switch (data->current_filetype)
-            {
-            case DIRECTORY:
-              return NFS4ERR_ISDIR;
-            default:
-              return NFS4ERR_INVAL;
-            }
+        /* If there is no FH */
+        if (nfs4_Is_Fh_Empty(&(data->currentFH))) {
+                LogDebug(COMPONENT_FILEHANDLE,
+                         "nfs4_Is_Fh_Empty failed");
+                return NFS4ERR_NOFILEHANDLE;
         }
-    }
 
-  return NFS4_OK;
-}
+        /* If the filehandle is invalid */
+        if (nfs4_Is_Fh_Invalid(&(data->currentFH))) {
+                LogDebug(COMPONENT_FILEHANDLE,
+                         "nfs4_Is_Fh_Invalid failed");
+                return NFS4ERR_BADHANDLE;
+        }
+
+        /* Tests if the Filehandle is expired (for volatile filehandle) */
+        if (nfs4_Is_Fh_Expired(&(data->currentFH))) {
+                LogDebug(COMPONENT_FILEHANDLE,
+                         "nfs4_Is_Fh_Expired failed");
+                return NFS4ERR_FHEXPIRED;
+        }
+
+        /* Check for the correct file type */
+        if (required_type) {
+                if (data->current_filetype != required_type) {
+                        LogDebug(COMPONENT_NFSPROTO,
+                                 "Wrong file type");
+
+                        if(required_type == DIRECTORY) {
+                                return NFS4ERR_NOTDIR;
+                        }
+                        else if(required_type == SYMBOLIC_LINK) {
+                                        return NFS4ERR_INVAL;
+                        }
+
+                        switch (data->current_filetype) {
+                        case DIRECTORY:
+                                return NFS4ERR_ISDIR;
+                        default:
+                                return NFS4ERR_INVAL;
+                        }
+                }
+        }
+
+        if (nfs4_Is_Fh_DSHandle(&data->currentFH)) {
+                return NFS4ERR_INVAL;
+        }
+
+        return NFS4_OK;
+} /* nfs4_sanity_check_FH */
 

@@ -234,7 +234,6 @@ nfs_client_record_t *get_client_record(char * value, int len);
  *
  ******************************************************************************/
 
-#ifdef _USE_NFS4_1
 int display_session_id_key(hash_buffer_t * pbuff, char *str);
 int display_session_id_val(hash_buffer_t * pbuff, char *str);
 int compare_session_id(hash_buffer_t * buff1, hash_buffer_t * buff2);
@@ -258,7 +257,6 @@ void nfs41_Build_sessionid(clientid4 * pclientid, char * sessionid);
 void nfs41_Session_PrintAll(void);
 int display_session(nfs41_session_t * psession, char * str);
 int display_session_id(char * session_id, char * str);
-#endif
 
 /******************************************************************************
  *
@@ -353,8 +351,8 @@ void nfs4_owner_PrintAll(void);
 int nfs4_owner_Get_Pointer(state_nfs4_owner_name_t  * pname,
                            state_owner_t           ** powner);
 
-state_owner_t *create_nfs4_owner(state_nfs4_owner_name_t * pname,
-                                 nfs_client_id_t         * pclientid,
+state_owner_t *create_nfs4_owner(state_nfs4_owner_name_t * name,
+                                 nfs_client_id_t         * clientid,
                                  state_owner_type_t        type,
                                  state_owner_t           * related_owner,
                                  unsigned int              init_seqid);
