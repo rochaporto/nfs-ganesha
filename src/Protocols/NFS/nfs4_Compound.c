@@ -153,6 +153,8 @@ int nfs4_Compound(nfs_arg_t *arg,
   unsigned int i = 0;
   int status = NFS4_OK;
   compound_data_t data;
+  struct req_op_context req_ctx;
+  sockaddr_t caller_addr;
   int opindex;
   #define TAGLEN 64
   char tagstr[TAGLEN + 1 + 5];
@@ -209,6 +211,11 @@ int nfs4_Compound(nfs_arg_t *arg,
 
   /* Initialisation of the compound request internal's data */
   memset(&data, 0, sizeof(data));
+  memset(&req_ctx, 0, sizeof(req_ctx));
+  copy_xprt_addr(&caller_addr, req->rq_xprt);
+  req_ctx.creds = creds;
+  req_ctx.caller_addr = &caller_addr;
+  data.req_ctx = &req_ctx;
 
   /* Minor version related stuff */
   data.minorversion = compound4_minor;
@@ -219,7 +226,6 @@ int nfs4_Compound(nfs_arg_t *arg,
 
   data.pfullexportlist = export; /* Full export list is provided in
                                     input */
-  data.user_credentials = *creds;     /* Get the client user's credentials */
   data.pworker = worker;
   data.pseudofs = nfs4_GetPseudoFs();
   data.reqp = req;
