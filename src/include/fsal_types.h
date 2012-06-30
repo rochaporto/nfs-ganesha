@@ -191,25 +191,6 @@ typedef enum
 
 #define cache_inode_file_type_t object_file_type_t
 
-
-/** @TODO deprecate this.  Not only a duplicate of cache_inode_file_type_t
- * but the bits don't even line up.  Replace usage with ^^
- * for now, make the bits line up.  DO NOT USE in new api!!!
- */
-/** FS object types */
-/* typedef enum fsal_nodetype__ */
-/* { */
-/*   FSAL_TYPE_FIFO =  7,   /\**< Fifo              *\/ */
-/*   FSAL_TYPE_CHR =   3,   /\**< character special *\/ */
-/*   FSAL_TYPE_DIR =   8,   /\**< directory         *\/ */
-/*   FSAL_TYPE_BLK =   4,   /\**< block special     *\/ */
-/*   FSAL_TYPE_FILE =  2,   /\**< regular file      *\/ */
-/*   FSAL_TYPE_LNK =   5,   /\**< symbolic link     *\/ */
-/*   FSAL_TYPE_SOCK =  6,   /\**< socket            *\/ */
-/*   FSAL_TYPE_XATTR = 10,  /\**< extended attribute *\/ */
-/*   FSAL_TYPE_JUNCTION = 9 /\**< junction to another fileset *\/ */
-/* } fsal_nodetype_t; */
-
 /* ---------------
  *  FS dependant :
  * --------------*/
@@ -250,7 +231,7 @@ struct user_cred {
 };
 
 /* deprecated and replaced by user_cred
- * used mainly in the fsal_op_context_t which is itself deprecated
+ * still used in include/sal_data.h
  */
 
 struct user_credentials {
@@ -259,6 +240,49 @@ struct user_credentials {
   int nbgroups;
   gid_t alt_groups[FSAL_NGROUPS_MAX];
   sockaddr_t caller_addr;
+};
+
+/**
+ * @brief request op context
+ *
+ * This is created early in the operation with the context of the
+ * operation.  The difference between "context" and request parameters
+ * or arguments is that the context is derived information such as
+ * the resolved credentials, socket (network and client host) data
+ * and other bits of environment associated with the request.  It gets
+ * passed down the call chain only as far as it needs to go for the op
+ * i.e. don't put it in the function/method proto "just because".
+ *
+ * The lifetime of this structure and all the data it points to is the
+ * operation for V2,3 and the compound for V4+.  All elements and what
+ * they point to are invariant for the lifetime.
+ *
+ * NOTE: This is a across-the-api shared structure.  It must survive with
+ *       older consumers of its contents.  Future development
+ *       can change this struct so long as it follows the rules:
+ *
+ *       1. New elements are appended at the end, never inserted in the middle.
+ *
+ *       2. This structure _only_ contains pointers.
+ *
+ *       3. Changing an already defined struct pointer is strictly not allowed.
+ *
+ *       4. This struct is always passed by reference, never by value.
+ *
+ *       5. This struct is never copied/saved.
+ *
+ *       6. Code changes are first introduced in the core.  Assume the fsal
+ *          module does not know and the code will still do the right thing.
+ */
+
+/** @TODO this struct will replace struct user_cred *creds throughout
+ *  protocol and fsal_api where creds replaced fsal_op_context.
+ */
+
+struct req_op_context {
+	struct user_cred *creds; /* resolved user creds from request */
+	sockaddr_t *caller_addr; /* IP connection info */
+	/* add new context members here */
 };
 
 typedef struct fsal_name__
