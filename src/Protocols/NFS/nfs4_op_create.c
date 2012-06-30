@@ -111,7 +111,7 @@ int nfs4_op_create(struct nfs_argop4 *op,
   fsal_status = exp_hdl->ops->check_quota(exp_hdl,
 					  data->pexport->fullpath,
 					  FSAL_QUOTA_INODES,
-					  &data->user_credentials);
+					  data->req_ctx->creds);
   if( FSAL_IS_ERROR( fsal_status ) )
     {
       res_CREATE4.status = NFS4ERR_DQUOT ;
@@ -260,7 +260,7 @@ int nfs4_op_create(struct nfs_argop4 *op,
                                          mode,
                                          &create_arg,
                                          &attr_new,
-                                         &data->user_credentials,
+                                         data->req_ctx->creds,
                                          &cache_status)) == NULL)
         {
           res_CREATE4.status = nfs4_Errno(cache_status);
@@ -289,7 +289,7 @@ int nfs4_op_create(struct nfs_argop4 *op,
                                          mode,
                                          &create_arg,
                                          &attr_new,
-                                         &data->user_credentials,
+                                         data->req_ctx->creds,
                                          &cache_status)) == NULL)
         {
           res_CREATE4.status = nfs4_Errno(cache_status);
@@ -314,7 +314,7 @@ int nfs4_op_create(struct nfs_argop4 *op,
                                          mode,
                                          NULL,
                                          &attr_new,
-                                         &data->user_credentials,
+                                         data->req_ctx->creds,
                                          &cache_status)) == NULL)
         {
           res_CREATE4.status = nfs4_Errno(cache_status);
@@ -339,7 +339,7 @@ int nfs4_op_create(struct nfs_argop4 *op,
                                          mode,
                                          NULL,
                                          &attr_new,
-                                         &data->user_credentials,
+                                         data->req_ctx->creds,
                                          &cache_status)) == NULL)
         {
           res_CREATE4.status = nfs4_Errno(cache_status);
@@ -369,7 +369,7 @@ int nfs4_op_create(struct nfs_argop4 *op,
                                          mode,
                                          &create_arg,
                                          &attr_new,
-                                         &data->user_credentials,
+                                         data->req_ctx->creds,
                                          &cache_status))
          == NULL)
         {
@@ -398,7 +398,7 @@ int nfs4_op_create(struct nfs_argop4 *op,
                                          mode,
                                          &create_arg,
                                          &attr_new,
-                                         &data->user_credentials,
+                                         data->req_ctx->creds,
                                          &cache_status)) == NULL)
         {
           res_CREATE4.status = nfs4_Errno(cache_status);
@@ -453,7 +453,7 @@ int nfs4_op_create(struct nfs_argop4 *op,
     {
       if((cache_status = cache_inode_setattr(entry_new,
                                              &sattr,
-                                             &data->user_credentials,
+                                             data->req_ctx->creds,
                                              &cache_status)) != CACHE_INODE_SUCCESS)
 
         {

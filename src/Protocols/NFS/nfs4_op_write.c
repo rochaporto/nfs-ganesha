@@ -287,7 +287,7 @@ int nfs4_op_write(struct nfs_argop4 *op,
     {
       if(cache_inode_access(entry,
                             FSAL_WRITE_ACCESS,
-                            &data->user_credentials,
+                            data->req_ctx->creds,
                             &cache_status) != CACHE_INODE_SUCCESS)
         {
           res_WRITE4.status = nfs4_Errno(cache_status);;
@@ -382,7 +382,7 @@ int nfs4_op_write(struct nfs_argop4 *op,
                       &written_size,
                       bufferdata,
                       &eof_met,
-                      &data->user_credentials,
+                      data->req_ctx->creds,
                       stability,
                       &cache_status) != CACHE_INODE_SUCCESS)
     {
