@@ -11,7 +11,7 @@ AC_DEFINE( [NFS_GANESHA], 1, [Ganesha])
 dnl AC_CONFIG_AUX_DIR([build-aux])
 AC_CONFIG_HEADER([include/config.h])
 AC_CONFIG_MACRO_DIR([m4])
-AC_REVISION([Compiles:  i386/x86_64. FSAL: POSIX/PROXY/HPSS/FUSELIKE/LUSTRE/XFS/GPFS/ZFS/VFS/CEPH .xattr ghost dir support. RPCSEC_GSS/KRB5, TI-RPC (prod),  Early pNFS (alpha) ])
+AC_REVISION([Compiles:  i386/x86_64. FSAL: POSIX/PROXY/HPSS/FUSELIKE/LUSTRE/XFS/GPFS/ZFS/VFS/CEPH/DMLITE .xattr ghost dir support. RPCSEC_GSS/KRB5, TI-RPC (prod),  Early pNFS (alpha) ])
 
 # Init Automake
 #AM_INIT_AUTOMAKE([-Wall -Werror foreign])
@@ -54,7 +54,7 @@ GA_PROG_DOXYGEN
 # define everything necessary for accessing large files (64bits offset)
 AC_SYS_LARGEFILE
 
-CFLAGS="$CFLAGS -D_REENTRANT -Wall -Wimplicit -Wformat -Wmissing-braces -Wno-pointer-sign"
+CFLAGS="$CFLAGS -D_REENTRANT -Wall -Wimplicit -Wformat -Wmissing-braces -Wno-pointer-sign -Wno-strict-aliasing"
 
 # Version number for shared object
 LIBVERSION=`echo $VERSION | sed -e 's/\./:/g'`
@@ -301,6 +301,7 @@ GA_ENABLE_AM_CONDITION([fsal-shook],[build SHOOK FSAL],[USE_FSAL_SHOOK])
 GA_ENABLE_AM_CONDITION([fsal-xfs],[build XFS FSAL],[USE_FSAL_XFS])
 GA_ENABLE_AM_CONDITION([fsal-gpfs],[build GPFS FSAL],[USE_FSAL_GPFS])
 GA_ENABLE_AM_CONDITION([fsal-ceph],[build CEPH FSAL],[USE_FSAL_CEPH])
+GA_ENABLE_AM_CONDITION([fsal-dmlite],[build DMLITE FSAL],[USE_FSAL_DMLITE])
 GA_ENABLE_AM_CONDITION([fsal-zfs],[build ZFS FSAL],[USE_FSAL_ZFS])
 
 # FSAL_UP
@@ -641,6 +642,21 @@ if test "$enable_fsal_ceph" == "yes"; then
 	FSAL_LIB="\$(top_builddir)/FSAL/FSAL_CEPH/libfsalceph.la"
 fi
 
+if test "$enable_fsal_dmlite" == "yes"; then
+	AC_DEFINE([_USE_DMLITE], 1, [GANESHA exports DMLITE Filesystem])
+	AC_CHECK_HEADERS([dmlite/dmlite.h], [], [AC_MSG_ERROR( missing dmlite include files)])
+	CFLAGS="${CFLAGS}"
+	FSAL_CFLAGS=""
+	LDFLAGS=""
+	FSAL_LDFLAGS=-ldmlite
+	if test \( "x$enable_pnfs_mds" = "xyes" \) -o \( "x$enable_pnfs_ds" = "xyes" \); then
+		FSALPNFS_LIB="\$(top_builddir)/FSAL/FSAL_DMLITE/libfsalpnfsdmlite.la"
+	else
+		FSALPNFS_LIB=""
+	fi
+	FSAL_LIB="\$(top_builddir)/FSAL/FSAL_DMLITE/libfsaldmlite.la"
+fi
+
 if test "$enable_fsal_gpfs" == "yes"; then
 	AC_DEFINE([_USE_GPFS], 1, [GANESHA exports GPFS Filesystem])
 	AC_DEFINE(_USE_FSAL_UP,1,[enable FSAL Upcall Interface support])
@@ -831,6 +847,7 @@ AC_CONFIG_FILES([include/Makefile
                  include/FSAL/FSAL_VFS/Makefile
                  include/FSAL/FSAL_TEMPLATE/Makefile
                  include/FSAL/FSAL_CEPH/Makefile
+                 include/FSAL/FSAL_DMLITE/Makefile
                  Common/Makefile
                  support/Makefile
                  Log/Makefile
@@ -863,6 +880,7 @@ AC_CONFIG_FILES([include/Makefile
 		 FSAL/FSAL_POSIX/DBExt/MYSQL/Makefile
 		 FSAL/FSAL_PROXY/Makefile
 		 FSAL/FSAL_CEPH/Makefile
+		 FSAL/FSAL_DMLITE/Makefile
 		 FSAL/FSAL_FUSELIKE/Makefile
 		 FSAL/FSAL_LUSTRE/Makefile
 		 FSAL/FSAL_XFS/Makefile

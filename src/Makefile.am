@@ -170,6 +170,7 @@ EXTRA_DIST=nfs-ganesha.spec              \
            THANKS                        \
            KNOWN_BUGS                    \
            nfs-ganesha.ceph.init         \
+           nfs-ganesha.dmlite.init         \
            nfs-ganesha.posix.init        \
            nfs-ganesha.lustre.init       \
            nfs-ganesha.shook.init        \
@@ -182,6 +183,7 @@ EXTRA_DIST=nfs-ganesha.spec              \
            nfs-ganesha.zfs.init          \
            nfs-ganesha.dynfsal.init      \
            nfs-ganesha.ceph.sysconfig    \
+           nfs-ganesha.dmlite.sysconfig    \
            nfs-ganesha.hpss.sysconfig    \
            nfs-ganesha.proxy.sysconfig   \
            nfs-ganesha.dynfsal.sysconfig \

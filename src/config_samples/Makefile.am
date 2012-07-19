@@ -2,6 +2,7 @@ EXTRA_DIST = hosts.ganesha             \
              uidgid_mapfile.ganesha    \
              snmp.conf                 \
              ceph.ganesha.nfsd.conf    \
+             dpm.ganesha.nfsd.conf    \
 	     hpss.ganesha.nfsd.conf    \
 	     posix.ganesha.nfsd.conf   \
 	     proxy.ganesha.nfsd.conf   \
