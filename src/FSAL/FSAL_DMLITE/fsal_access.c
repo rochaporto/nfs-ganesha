@@ -1,9 +1,7 @@
 /*
  * vim:expandtab:shiftwidth=8:tabstop=8:
  *
- * Copyright (C) 2012, CERN IT/GT/DMS <it-dep-gt-dms@cern.ch>
- *
- * Some portions Copyright CEA/DAM/DIF  (2008)
+ * Copyright CEA/DAM/DIF  (2008)
  * contributeur : Philippe DENIEL   philippe.deniel@cea.fr
  *                Thomas LEIBOVICI  thomas.leibovici@cea.fr
  *
@@ -28,6 +26,9 @@
 /**
  *
  * \file    fsal_access.c
+ * \author  $Author: leibovic $
+ * \date    $Date: 2006/01/17 14:20:07 $
+ * \version $Revision: 1.16 $
  * \brief   FSAL access permissions functions.
  *
  */
@@ -38,21 +39,22 @@
 #include "fsal.h"
 #include "fsal_internal.h"
 #include "fsal_convert.h"
+#include "FSAL/access_check.h"
 
 /**
  * FSAL_access :
- * Tests whether the user or entity identified by the context structure
- * can access the object identified by filehandle
- * as indicated by the access_type parameter.
+ * Tests whether the user or entity identified by its cred
+ * can access the object identified by object_handle,
+ * as indicated by the access_type parameters.
  *
- * \param filehandle (input):
+ * \param object_handle (input):
  *        The handle of the object to test permissions on.
- * \param context (input):
- *        Authentication context for the operation (export entry, user,...).
+ * \param cred (input):
+ *        Authentication context for the operation (user,...).
  * \param access_type (input):
- *        Indicates the permissions to be tested.
+ *        Indicates the permissions to test.
  *        This is an inclusive OR of the permissions
- *        to be checked for the user specified by context.
+ *        to be checked for the user identified by cred.
  *        Permissions constants are :
  *        - FSAL_R_OK : test for read permission
  *        - FSAL_W_OK : test for write permission
@@ -64,52 +66,50 @@
  *        wants to retrieve (by positioning flags into this structure)
  *        and the output is built considering this input
  *        (it fills the structure according to the flags it contains).
- *        Can be NULL.
+ *        May be NULL.
  *
  * \return Major error codes :
- *        - ERR_FSAL_NO_ERROR     (no error, asked permission is granted)
- *        - ERR_FSAL_ACCESS       (object permissions doesn't fit asked access type)
- *        - ERR_FSAL_STALE        (object_handle does not address an existing object)
- *        - ERR_FSAL_FAULT        (a NULL pointer was passed as mandatory argument)
- *        - Other error codes when something anormal occurs.
+ *        - ERR_FSAL_NO_ERROR     (no error)
+ *        - Another error code if an error occured.
  */
-fsal_status_t DMLITEFSAL_access(fsal_handle_t * exthandle,
-                             fsal_op_context_t * extcontext,
-                             fsal_accessflags_t access_type,
-                             fsal_attrib_list_t * object_attributes)
+fsal_status_t DMLITEFSAL_access(fsal_handle_t * p_object_handle,      /* IN */
+                          fsal_op_context_t * p_context,        /* IN */
+                          fsal_accessflags_t access_type,       /* IN */
+                          fsal_attrib_list_t * p_object_attributes      /* [ IN/OUT ] */
+    )
 {
+
   fsal_status_t status;
 
   /* sanity checks.
    * note : object_attributes is optionnal in VFSFSAL_getattrs.
    */
-  if(!exthandle || !extcontext)
+  if(!p_object_handle || !p_context)
     Return(ERR_FSAL_FAULT, 0, INDEX_FSAL_access);
 
-  /*
+  /* 
    * If an error occures during getattr operation,
    * it is returned, even though the access operation succeeded.
    */
 
-  if(object_attributes)
+  if(p_object_attributes)
     {
-      FSAL_SET_MASK(object_attributes->asked_attributes,
-                    FSAL_ATTR_OWNER | FSAL_ATTR_GROUP |
-                    FSAL_ATTR_ACL | FSAL_ATTR_MODE);
-      status = DMLITEFSAL_getattrs(exthandle, extcontext, object_attributes);
+
+      FSAL_SET_MASK(p_object_attributes->asked_attributes,
+                    FSAL_ATTR_OWNER | FSAL_ATTR_GROUP | FSAL_ATTR_ACL | FSAL_ATTR_MODE);
+      status = FSAL_getattrs(p_object_handle, p_context, p_object_attributes);
 
       /* on error, we set a special bit in the mask. */
       if(FSAL_IS_ERROR(status))
         {
-          FSAL_CLEAR_MASK(object_attributes->asked_attributes);
-          FSAL_SET_MASK(object_attributes->asked_attributes, FSAL_ATTR_RDATTR_ERR);
+          FSAL_CLEAR_MASK(p_object_attributes->asked_attributes);
+          FSAL_SET_MASK(p_object_attributes->asked_attributes, FSAL_ATTR_RDATTR_ERR);
           Return(status.major, status.minor, INDEX_FSAL_access);
         }
 
       status =
-           fsal_internal_testAccess((dmlitefsal_op_context_t*) extcontext,
-                                    access_type, NULL,
-                                    object_attributes);
+          fsal_check_access(p_context, access_type, NULL, p_object_attributes);
+
     }
   else
     {                           /* p_object_attributes is NULL */
@@ -117,18 +117,17 @@ fsal_status_t DMLITEFSAL_access(fsal_handle_t * exthandle,
 
       FSAL_CLEAR_MASK(attrs.asked_attributes);
       FSAL_SET_MASK(attrs.asked_attributes,
-                    FSAL_ATTR_OWNER | FSAL_ATTR_GROUP |
-                    FSAL_ATTR_ACL | FSAL_ATTR_MODE);
+                    FSAL_ATTR_OWNER | FSAL_ATTR_GROUP | FSAL_ATTR_ACL | FSAL_ATTR_MODE);
 
-      status = DMLITEFSAL_getattrs(exthandle, extcontext, &attrs);
+      status = FSAL_getattrs(p_object_handle, p_context, &attrs);
 
       /* on error, we set a special bit in the mask. */
       if(FSAL_IS_ERROR(status))
         Return(status.major, status.minor, INDEX_FSAL_access);
 
-      status = fsal_internal_testAccess((dmlitefsal_op_context_t*) extcontext,
-                                        access_type, NULL, &attrs);
+      status = fsal_check_access(p_context, access_type, NULL, &attrs);
     }
 
   Return(status.major, status.minor, INDEX_FSAL_access);
+
 }

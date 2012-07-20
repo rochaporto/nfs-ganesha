@@ -1,33 +1,13 @@
 /*
- * vim:expandtab:shiftwidth=8:tabstop=8:
- *
- * Copyright (C) 2012, CERN IT/GT/DMS <it-dep-gt-dms@cern.ch>
- *
- * Some portions Copyright CEA/DAM/DIF  (2008)
- * contributeur : Philippe DENIEL   philippe.deniel@cea.fr
- *                Thomas LEIBOVICI  thomas.leibovici@cea.fr
- *
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 3 of the License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
- *
- * -------------
+ * vim:expandtab:shiftwidth=4:tabstop=4:
  */
 
 /**
  *
  * \file    fsal_dirs.c
+ * \author  $Author: leibovic $
+ * \date    $Date: 2005/07/29 09:39:04 $
+ * \version $Revision: 1.10 $
  * \brief   Directory browsing operations.
  *
  */
@@ -37,6 +17,7 @@
 
 #include "fsal.h"
 #include "fsal_internal.h"
+#include "FSAL/access_check.h"
 #include "fsal_convert.h"
 #include <string.h>
 
@@ -44,78 +25,96 @@
  * FSAL_opendir :
  *     Opens a directory for reading its content.
  *
- * \param exthandle (input)
+ * \param dir_handle (input)
  *         the handle of the directory to be opened.
- * \param extcontext (input)
- *         Permission context for the operation (user, export context...).
- * \param extdescriptor (output)
+ * \param cred (input)
+ *         Permission context for the operation (user,...).
+ * \param dir_descriptor (output)
  *         pointer to an allocated structure that will receive
  *         directory stream informations, on successfull completion.
- * \param attributes (optional output)
+ * \param dir_attributes (optional output)
  *         On successfull completion,the structure pointed
  *         by dir_attributes receives the new directory attributes.
- *         Can be NULL.
+ *         May be NULL.
  *
  * \return Major error codes :
  *        - ERR_FSAL_NO_ERROR     (no error)
- *        - ERR_FSAL_ACCESS       (user does not have read permission on directory)
- *        - ERR_FSAL_STALE        (exthandle does not address an existing object)
- *        - ERR_FSAL_FAULT        (a NULL pointer was passed as mandatory argument)
- *        - Other error codes can be returned :
- *          ERR_FSAL_IO, ...
+ *        - Another error code if an error occured.
  */
-fsal_status_t DMLITEFSAL_opendir(fsal_handle_t * exthandle,
-                               fsal_op_context_t * extcontext,
-                               fsal_dir_t * extdescriptor,
-                               fsal_attrib_list_t * dir_attributes)
+fsal_status_t VFSFSAL_opendir(fsal_handle_t * p_dir_handle,  /* IN */
+                              fsal_op_context_t * p_context, /* IN */
+                              fsal_dir_t * dir_desc, /* OUT */
+                              fsal_attrib_list_t * p_dir_attributes     /* [ IN/OUT ] */
+    )
 {
-  dmlitefsal_handle_t* handle = (dmlitefsal_handle_t*) exthandle;
-  dmlitefsal_op_context_t* context = (dmlitefsal_op_context_t*) extcontext;
-  dmlitefsal_dir_t* descriptor = (dmlitefsal_dir_t*) extdescriptor;
+  vfsfsal_dir_t * p_dir_descriptor = (vfsfsal_dir_t *) dir_desc;
+  int rc, errsv;
   fsal_status_t status;
-  int rc;
-  int uid = FSAL_OP_CONTEXT_TO_UID(context);
-  int gid = FSAL_OP_CONTEXT_TO_GID(context);
-  struct dmlite_dir_result *dh; // TODO: dmlite_dir
+
+  struct stat buffstat;
 
   /* sanity checks
-   * note : dir_attributes is optional.
+   * note : dir_attributes is optionnal.
    */
-  if(!handle || !context || !descriptor)
+  if(!p_dir_handle || !p_context || !p_dir_descriptor)
     Return(ERR_FSAL_FAULT, 0, INDEX_FSAL_opendir);
 
+  /* get the path of the directory */
   TakeTokenFSCall();
-
-  // TODO: dmlite_opendir
-
+  status =
+      fsal_internal_handle2fd(p_context, p_dir_handle, &p_dir_descriptor->fd,
+                              O_RDONLY | O_DIRECTORY);
   ReleaseTokenFSCall();
 
-  if (rc < 0)
-    Return(posix2fsal_error(rc), 0, INDEX_FSAL_opendir);
+  if(FSAL_IS_ERROR(status))
+    ReturnStatus(status, INDEX_FSAL_opendir);
 
-  descriptor->dh = dh;
-  descriptor->vi = VINODE(handle);
-  descriptor->ctx = *context;
+  /* get directory metadata */
+  TakeTokenFSCall();
+  rc = fstat(p_dir_descriptor->fd, &buffstat);
+  errsv = errno;
+  ReleaseTokenFSCall();
 
-  if(dir_attributes)
+  if(rc != 0)
     {
-      status = DMLITEFSAL_getattrs(exthandle, extcontext, dir_attributes);
+      close(p_dir_descriptor->fd);
+      if(errsv == ENOENT)
+        Return(ERR_FSAL_STALE, errsv, INDEX_FSAL_opendir);
+      else
+        Return(posix2fsal_error(errsv), errsv, INDEX_FSAL_opendir);
+    }
 
+  /* Test access rights for this directory */
+  status = fsal_check_access(p_context, FSAL_R_OK, &buffstat, NULL);
+  if(FSAL_IS_ERROR(status))
+    ReturnStatus(status, INDEX_FSAL_opendir);
+
+  /* if everything is OK, fills the dir_desc structure : */
+
+  memcpy(&(p_dir_descriptor->context), p_context, sizeof(vfsfsal_op_context_t));
+  memcpy(&(p_dir_descriptor->handle), p_dir_handle, sizeof(vfsfsal_handle_t));
+
+  if(p_dir_attributes)
+    {
+      status = posix2fsal_attributes(&buffstat, p_dir_attributes);
       if(FSAL_IS_ERROR(status))
         {
-          FSAL_CLEAR_MASK(dir_attributes->asked_attributes);
-          FSAL_SET_MASK(dir_attributes->asked_attributes, FSAL_ATTR_RDATTR_ERR);
+          FSAL_CLEAR_MASK(p_dir_attributes->asked_attributes);
+          FSAL_SET_MASK(p_dir_attributes->asked_attributes, FSAL_ATTR_RDATTR_ERR);
         }
     }
 
+  p_dir_descriptor->dir_offset = 0;
+
   Return(ERR_FSAL_NO_ERROR, 0, INDEX_FSAL_opendir);
+
 }
 
 /**
  * FSAL_readdir :
  *     Read the entries of an opened directory.
  *
- * \param descriptor (input):
+ * \param dir_descriptor (input):
  *        Pointer to the directory descriptor filled by FSAL_opendir.
  * \param start_position (input):
  *        Cookie that indicates the first object to be read during
@@ -130,11 +129,11 @@ fsal_status_t DMLITEFSAL_opendir(fsal_handle_t * exthandle,
  * \param buffersize (input)
  *        The size (in bytes) of the buffer where
  *        the direntries are to be stored.
- * \param dirents (output)
- *        Adress of the buffer where the direntries are to be stored.
+ * \param pdirent (output)
+ *        Adresse of the buffer where the direntries are to be stored.
  * \param end_position (output)
  *        Cookie that indicates the current position in the directory.
- * \param count (output)
+ * \param nb_entries (output)
  *        Pointer to the number of entries read during the call.
  * \param end_of_dir (output)
  *        Pointer to a boolean that indicates if the end of dir
@@ -142,73 +141,201 @@ fsal_status_t DMLITEFSAL_opendir(fsal_handle_t * exthandle,
  *
  * \return Major error codes :
  *        - ERR_FSAL_NO_ERROR     (no error)
- *        - ERR_FSAL_FAULT        (a NULL pointer was passed as mandatory argument) 
- *        - Other error codes can be returned :
- *          ERR_FSAL_IO, ...
+ *        - Another error code if an error occured.
  */
-fsal_status_t DMLITEFSAL_readdir(fsal_dir_t *extdescriptor,
-                               fsal_cookie_t extstart,
-                               fsal_attrib_mask_t attrmask,
-                               fsal_mdsize_t buffersize,
-                               fsal_dirent_t *dirents,
-                               fsal_cookie_t *extend,
-                               fsal_count_t *count,
-                               fsal_boolean_t *end_of_dir)
+
+struct linux_dirent
 {
+  long d_ino;
+  long d_off;                   /* Be careful, SYS_getdents is a 32 bits call */
+  unsigned short d_reclen;
+  char d_name[];
+};
+
+#define BUF_SIZE 1024
+
+fsal_status_t VFSFSAL_readdir(fsal_dir_t * dir_descriptor,      /* IN */
+                              fsal_cookie_t startposition,      /* IN */
+                              fsal_attrib_mask_t get_attr_mask, /* IN */
+                              fsal_mdsize_t buffersize,         /* IN */
+                              fsal_dirent_t * p_pdirent,        /* OUT */
+                              fsal_cookie_t * end_position,     /* OUT */
+                              fsal_count_t * p_nb_entries,      /* OUT */
+                              fsal_boolean_t * p_end_of_dir     /* OUT */
+    )
+{
+  vfsfsal_dir_t * p_dir_descriptor = (vfsfsal_dir_t * ) dir_descriptor;
+  vfsfsal_cookie_t start_position;
+  vfsfsal_cookie_t * p_end_position = (vfsfsal_cookie_t *) end_position;
+  fsal_status_t st;
+  fsal_count_t max_dir_entries;
+  fsal_name_t entry_name;
+  char buff[BUF_SIZE];
+  struct linux_dirent *dp = NULL;
+  int bpos = 0;
+
+  struct stat buffstat;
+
   int rc = 0;
-  fsal_status_t status;
-  struct dirent de;
-  dmlitefsal_dir_t* descriptor = (dmlitefsal_dir_t*) extdescriptor;
 
-  loff_t start = ((dmlitefsal_cookie_t*) extstart.data)->cookie;
-  loff_t* end = &((dmlitefsal_cookie_t*) extend->data)->cookie;
-  unsigned int max_entries = buffersize / sizeof(fsal_dirent_t);
+  memset(buff, 0, BUF_SIZE);
+  memset(&entry_name, 0, sizeof(fsal_name_t));
 
+  /*****************/
   /* sanity checks */
+  /*****************/
 
-  if(!descriptor || !dirents || !end || !count || !end_of_dir)
+  if(!p_dir_descriptor || !p_pdirent || !p_end_position || !p_nb_entries || !p_end_of_dir)
     Return(ERR_FSAL_FAULT, 0, INDEX_FSAL_readdir);
 
-  *end_of_dir = FALSE;
-  *count = 0;
+  max_dir_entries = (buffersize / sizeof(fsal_dirent_t));
 
-  TakeTokenFSCall();
+  /***************************/
+  /* seek into the directory */
+  /***************************/
+  start_position.data.cookie = *((off_t*) &startposition.data);
+  rc = errno = 0;
+  lseek(p_dir_descriptor->fd, start_position.data.cookie, SEEK_SET);
+  rc = errno;
 
-  // TODO: dmlite_readdir
+  if(rc)
+    Return(posix2fsal_error(rc), rc, INDEX_FSAL_readdir);
+
+  /************************/
+  /* browse the directory */
+  /************************/
+
+  *p_nb_entries = 0;
+  while(*p_nb_entries < max_dir_entries)
+    {
+    /***********************/
+      /* read the next entry */
+    /***********************/
+      TakeTokenFSCall();
+      rc = syscall(SYS_getdents, p_dir_descriptor->fd, buff, BUF_SIZE);
+      ReleaseTokenFSCall();
+      if(rc < 0)
+        {
+          rc = errno;
+          Return(posix2fsal_error(rc), rc, INDEX_FSAL_readdir);
+        }
+      /* End of directory */
+      if(rc == 0)
+        {
+          *p_end_of_dir = 1;
+          break;
+        }
+
+    /***********************************/
+      /* Get information about the entry */
+    /***********************************/
+
+      for(bpos = 0; bpos < rc;)
+        {
+          dp = (struct linux_dirent *)(buff + bpos);
+
+          bpos += dp->d_reclen;
+
+          if(!(*p_nb_entries < max_dir_entries))
+            break;
+
+          /* skip . and .. */
+          if(!strcmp(dp->d_name, ".") || !strcmp(dp->d_name, ".."))
+            continue;
+
+          /* build the full path of the file into "fsalpath */
+          if(FSAL_IS_ERROR
+             (st =
+              FSAL_str2name(dp->d_name, FSAL_MAX_NAME_LEN,
+                            &(p_pdirent[*p_nb_entries].name))))
+            ReturnStatus(st, INDEX_FSAL_readdir);
+
+
+          // TODO: there is a race here, because between handle fetch
+          // and open at things might change.  we need to figure out if there
+          // is another way to open without the pcontext
+
+          strncpy(entry_name.name, dp->d_name, sizeof(entry_name.name));
+          entry_name.len = strlen(entry_name.name);
+
+          /* get object handle */
+          TakeTokenFSCall();
+
+          
+          if(fstatat(p_dir_descriptor->fd, dp->d_name, &buffstat, AT_SYMLINK_NOFOLLOW) < 0 )
+            {
+              ReleaseTokenFSCall();
+              Return(posix2fsal_error(errno), errno, INDEX_FSAL_readdir);
+            }
+
+          st = fsal_internal_get_handle_at( p_dir_descriptor->fd, dp->d_name,
+		           				            &p_pdirent[*p_nb_entries].handle) ;
+          if(FSAL_IS_ERROR(st))
+            {
+              ReleaseTokenFSCall();
+              ReturnStatus(st, INDEX_FSAL_readdir);
+            }
+          p_pdirent[*p_nb_entries].attributes.asked_attributes = get_attr_mask;
+
+          st = posix2fsal_attributes(&buffstat, &p_pdirent[*p_nb_entries].attributes);
+          if(FSAL_IS_ERROR(st))
+            {
+              ReleaseTokenFSCall();
+              FSAL_CLEAR_MASK(p_pdirent[*p_nb_entries].attributes.asked_attributes);
+              FSAL_SET_MASK(p_pdirent[*p_nb_entries].attributes.asked_attributes,
+                            FSAL_ATTR_RDATTR_ERR);
+              ReturnStatus(st, INDEX_FSAL_getattrs);
+            }
+
+          ReleaseTokenFSCall();
+
+          //p_pdirent[*p_nb_entries].cookie.cookie = dp->d_off;
+          ((vfsfsal_cookie_t *) (&p_pdirent[*p_nb_entries].cookie))->data.cookie = dp->d_off;
+          p_pdirent[*p_nb_entries].nextentry = NULL;
+          if(*p_nb_entries)
+            p_pdirent[*p_nb_entries - 1].nextentry = &(p_pdirent[*p_nb_entries]);
+
+          //(*p_end_position) = p_pdirent[*p_nb_entries].cookie;
+          memcpy((char *)p_end_position, (char *)&p_pdirent[*p_nb_entries].cookie,
+                 sizeof(vfsfsal_cookie_t));
+
+          (*p_nb_entries)++;
+
+        }                       /* for */
+    }                           /* While */
 
   Return(ERR_FSAL_NO_ERROR, 0, INDEX_FSAL_readdir);
+
 }
 
 /**
  * FSAL_closedir :
  * Free the resources allocated for reading directory entries.
- *
+ *     
  * \param dir_descriptor (input):
  *        Pointer to a directory descriptor filled by FSAL_opendir.
- *
+ * 
  * \return Major error codes :
  *        - ERR_FSAL_NO_ERROR     (no error)
- *        - ERR_FSAL_FAULT        (a NULL pointer was passed as mandatory argument)
- *        - Other error codes can be returned :
- *          ERR_FSAL_IO, ...
+ *        - Another error code if an error occured.
  */
-fsal_status_t DMLITEFSAL_closedir(fsal_dir_t * extdescriptor)
+fsal_status_t VFSFSAL_closedir(fsal_dir_t * p_dir_desc /* IN */
+    )
 {
-  dmlitefsal_dir_t* descriptor = (dmlitefsal_dir_t*) extdescriptor;
-  int rc = 0;
+  vfsfsal_dir_t * p_dir_descriptor = (vfsfsal_dir_t *)p_dir_desc;
+  int rc;
 
   /* sanity checks */
-  if(!descriptor)
+  if(!p_dir_descriptor)
     Return(ERR_FSAL_FAULT, 0, INDEX_FSAL_closedir);
 
-  TakeTokenFSCall();
+  rc = close(p_dir_descriptor->fd);
+  if(rc != 0)
+    Return(posix2fsal_error(errno), errno, INDEX_FSAL_closedir);
 
-  // TODO: dmlite_closedir
-
-  ReleaseTokenFSCall();
-
-  if (rc < 0)
-    Return(posix2fsal_error(rc), 0, INDEX_FSAL_closedir);
+  /* fill dir_descriptor with zeros */
+  memset(p_dir_descriptor, 0, sizeof(vfsfsal_dir_t));
 
   Return(ERR_FSAL_NO_ERROR, 0, INDEX_FSAL_closedir);
+
 }

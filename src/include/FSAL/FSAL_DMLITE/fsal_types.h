@@ -1,8 +1,7 @@
 /*
  *
- * Copyright (C) 2012, CERN IT/GT/DMS <it-dep-gt-dms@cern.ch>
  *
- * Some Portions Copyright CEA/DAM/DIF  (2008)
+ * Copyright CEA/DAM/DIF  (2008)
  * contributeur : Philippe DENIEL   philippe.deniel@cea.fr
  *                Thomas LEIBOVICI  thomas.leibovici@cea.fr
  *
@@ -11,16 +10,16 @@
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
  * version 3 of the License, or (at your option) any later version.
- *
+ * 
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * Lesser General Public License for more details.
- *
+ * 
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
- *
+ * 
  * ---------------------------------------
  */
 
@@ -31,93 +30,154 @@
  * \version $Revision: 1.19 $
  * \brief   File System Abstraction Layer types and constants.
  *
+ *
+ *
  */
 
 #ifndef _FSAL_TYPES_SPECIFIC_H
 #define _FSAL_TYPES_SPECIFIC_H
 
-# define CONF_LABEL_FS_SPECIFIC   "DPM"
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+
+/*
+ * FS relative includes
+ */
+
+#include "config_parsing.h"
+#include "err_fsal.h"
+
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif                          /* _GNU_SOURCE */
+
+#ifndef _ATFILE_SOURCE
+#define _ATFILE_SOURCE
+#endif                          /* _ATFILE_SOURCE */
 
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <sys/statvfs.h>
-#include <sys/param.h>
-#include "config_parsing.h"
-#include "err_fsal.h"
-#include <pthread.h>
+#include <sys/syscall.h>
+#include <dirent.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <string.h>
+#include <errno.h>
+
+/*
+ * labels in the config file
+ */
+
+#define CONF_LABEL_FS_SPECIFIC   "VFS"
+
+
+/* -------------------------------------------
+ *      POSIX FS dependant definitions
+ * ------------------------------------------- */
+
+#define FSAL_VFS_HANDLE_LEN 29
+#define FSAL_VFS_FSHANDLE_LEN 64
+
+#include "fsal_handle_syscalls.h"
 #include "fsal_glue_const.h"
 
-#define fsal_handle_t dpmfsal_handle_t
-#define fsal_op_context_t dpmfsal_op_context_t
-#define fsal_file_t dpmfsal_file_t
-#define fsal_dir_t dpmfsal_dir_t
-#define fsal_export_context_t dpmfsal_export_context_t
-#define fsal_lockdesc_t dpmfsal_lockdesc_t
-#define fsal_cookie_t dpmfsal_cookie_t
-#define fs_specific_initinfo_t dpmfs_specific_initinfo_t
-#define fsal_cred_t dpmfsal_cred_t
+#define fsal_handle_t vfsfsal_handle_t
+#define fsal_op_context_t vfsfsal_op_context_t
+#define fsal_file_t vfsfsal_file_t
+#define fsal_dir_t vfsfsal_dir_t
+#define fsal_export_context_t vfsfsal_export_context_t
+#define fsal_lockdesc_t vfsfsal_lockdesc_t
+#define fsal_cookie_t vfsfsal_cookie_t
+#define fs_specific_initinfo_t vfsfs_specific_initinfo_t
+#define fsal_cred_t vfsfsal_cred_t
 
 typedef union {
-  struct
+ struct
   {
-    vinodeno_t vi;
-    uint64_t parent_ino;
-    uint32_t parent_hash;
-#ifdef _PNFS
-    struct dpm_file_layout layout;
-    uint64_t snapseq;
-#endif /* _PNFS */
-   } data;
+     vfs_file_handle_t vfs_handle ;
+  } data ;
   char pad[FSAL_HANDLE_T_SIZE];
-} dpmfsal_handle_t;
+} vfsfsal_handle_t;  /**< FS object handle */
 
-#define VINODE(fh) ((fh)->data.vi)
+/** Authentification context.    */
 
-typedef struct fsal_export_context__
+
+typedef struct
 {
   fsal_staticfsinfo_t * fe_static_fs_info;     /* Must be the first entry in this structure */
-} dpmfsal_export_context_t;
 
-typedef struct fsal_op_context__
+  char              fstype[MAXNAMLEN] ;
+  int               mount_root_fd ;
+  vfs_file_handle_t root_handle ;
+} vfsfsal_export_context_t;
+
+#define FSAL_EXPORT_CONTEXT_SPECIFIC( _pexport_context ) (uint64_t)((_pexport_context)->dev_id)
+
+//#define FSAL_GET_EXP_CTX( popctx ) (fsal_export_context_t *)(( (vfsfsal_op_context_t *)popctx)->export_context)
+
+/** @TODO
+ * Danger Will Robinson.
+ * this overlay causes type warnings due to the dereference
+ * of this struct in ExpandHandle and DigestHandle.
+ */
+typedef struct
 {
-  dpmfsal_export_context_t *export_context;
+  vfsfsal_export_context_t *export_context;     /* Must be the first entry in this structure */
   struct user_credentials credential;
-} dpmfsal_op_context_t;
+} vfsfsal_op_context_t;
 
-#define FSAL_OP_CONTEXT_TO_UID( pcontext ) ( (pcontext)->credential.user )
-#define FSAL_OP_CONTEXT_TO_GID( pcontext ) ( (pcontext)->credential.group )
+#define FSAL_OP_CONTEXT_TO_UID( pcontext ) ( pcontext->credential.user )
+#define FSAL_OP_CONTEXT_TO_GID( pcontext ) ( pcontext->credential.group )
 
-typedef struct fs_specific_initinfo__
+typedef struct
 {
-  int random;
-} dpmfs_specific_initinfo_t;
+  char vfs_mount_point[MAXPATHLEN];
+} vfsfs_specific_initinfo_t;
 
-
+/**< directory cookie */
 typedef union {
-  struct {
-    loff_t cookie;
-  } data;
+ struct
+ {
+  off_t cookie;
+ } data ;
   char pad[FSAL_COOKIE_T_SIZE];
-} dpmfsal_cookie_t;
+} vfsfsal_cookie_t;
 
-#define COOKIE(c) ((c).data.cookie)
+#define FSAL_SET_PCOOKIE_BY_OFFSET( __pfsal_cookie, __cookie )           \
+do                                                                       \
+{                                                                        \
+   ((vfsfsal_cookie_t *)__pfsal_cookie)->data.cookie = (off_t)__cookie ; \
+} while( 0 )
 
-typedef void *dpmfsal_lockdesc_t;
+#define FSAL_SET_OFFSET_BY_PCOOKIE( __pfsal_cookie, __cookie )           \
+do                                                                       \
+{                                                                        \
+   __cookie =  ((vfsfsal_cookie_t *)__pfsal_cookie)->data.cookie ;       \
+} while( 0 )
 
-typedef struct {
-  vinodeno_t vi;
-  struct dpm_dir_result *dh;
-  dpmfsal_op_context_t ctx;
-} dpmfsal_dir_t;
 
-#define DH(dir) (dir->dh)
+//static const vfsfsal_cookie_t FSAL_READDIR_FROM_BEGINNING = { 0 };
 
-typedef struct {
-  Fh* fh;
-  vinodeno_t vi;
-  dpmfsal_op_context_t ctx;
-} dpmfsal_file_t;
+/* Directory stream descriptor. */
 
-#define FH(file) ((file)->fh)
+typedef struct
+{
+  int fd;
+  vfsfsal_op_context_t context; /* credential for accessing the directory */
+  fsal_path_t path;
+  unsigned int dir_offset;
+  vfsfsal_handle_t handle;
+} vfsfsal_dir_t;
 
-#endif                          /* _FSAL_TYPES_SPECIFIC_H */
+typedef struct
+{
+  int fd;
+  int ro;                       /* read only file ? */
+} vfsfsal_file_t;
+
+//#define FSAL_GET_EXP_CTX( popctx ) (fsal_export_context_t *)(( (vfsfsal_op_context_t *)popctx)->export_context)
+//#define FSAL_FILENO( p_fsal_file )  ((vfsfsal_file_t *)p_fsal_file)->fd 
+
+#endif                          /* _FSAL_TYPES__SPECIFIC_H */

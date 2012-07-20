@@ -1,9 +1,7 @@
 /*
  * vim:expandtab:shiftwidth=8:tabstop=8:
  *
- * Copyright (C) 2012, CERN IT/GT/DMS <it-dep-gt-dms@cern.ch>
- *
- * Portions copyright CEA/DAM/DIF  (2008)
+ * Copyright CEA/DAM/DIF  (2008)
  * contributeur : Philippe DENIEL   philippe.deniel@cea.fr
  *                Thomas LEIBOVICI  thomas.leibovici@cea.fr
  *
@@ -22,11 +20,14 @@
  * License along with this library; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  *
- * -------------
+ * ------------- 
  */
 
 /**
  * \file    fsal_lookup.c
+ * \author  $Author: leibovic $
+ * \date    $Date: 2006/01/24 13:45:37 $
+ * \version $Revision: 1.17 $
  * \brief   Lookup operations.
  *
  */
@@ -34,8 +35,10 @@
 #include "config.h"
 #endif
 
+#include <string.h>
 #include "fsal.h"
 #include "fsal_internal.h"
+#include "FSAL/access_check.h"
 #include "fsal_convert.h"
 
 /**
@@ -59,144 +62,146 @@
  *        wants to retrieve (by positioning flags into this structure)
  *        and the output is built considering this input
  *        (it fills the structure according to the flags it contains).
- *        It can be NULL (increases performances).
  *
- * \return Major error codes :
- *        - ERR_FSAL_NO_ERROR     (no error)
- *        - ERR_FSAL_STALE        (parent_directory_handle does not address an existing object)
- *        - ERR_FSAL_NOTDIR       (parent_directory_handle does not address a directory)
- *        - ERR_FSAL_NOENT        (the object designated by p_filename does not exist)
- *        - ERR_FSAL_XDEV         (tried to operate a lookup on a filesystem junction.
- *                                 Use FSAL_lookupJunction instead)
- *        - ERR_FSAL_FAULT        (a NULL pointer was passed as mandatory argument)
- *        - Other error codes can be returned :
- *          ERR_FSAL_ACCESS, ERR_FSAL_IO, ...
- *
+ * \return - ERR_FSAL_NO_ERROR, if no error.
+ *         - Another error code else.
+ *          
  */
-fsal_status_t DMLITEFSAL_lookup(fsal_handle_t * extparent,
-                              fsal_name_t * filename,
-                              fsal_op_context_t * extcontext,
-                              fsal_handle_t * exthandle,
-                              fsal_attrib_list_t * object_attributes)
+fsal_status_t VFSFSAL_lookup(fsal_handle_t * p_parent_directory_handle,      /* IN */
+                             fsal_name_t * p_filename,  /* IN */
+                             fsal_op_context_t * p_context,  /* IN */
+                             fsal_handle_t * p_object_handle,        /* OUT */
+                             fsal_attrib_list_t * p_object_attributes   /* [ IN/OUT ] */
+    )
 {
-  int rc;
-  struct stat st;
+  vfsfsal_handle_t * vfs_handle = (vfsfsal_handle_t *)p_object_handle;
+  vfsfsal_op_context_t *vfs_context = (vfsfsal_op_context_t *)p_context;
+  int rc, errsv;
   fsal_status_t status;
-  dmlitefsal_handle_t* parent = (dmlitefsal_handle_t*) extparent;
-  dmlitefsal_op_context_t* context = (dmlitefsal_op_context_t*) extcontext;
-  dmlitefsal_handle_t* handle = (dmlitefsal_handle_t*) exthandle;
-  char str[FSAL_MAX_NAME_LEN];
+  struct stat buffstat;
+  int parentfd;
 
   /* sanity checks
    * note : object_attributes is optionnal
    *        parent_directory_handle may be null for getting FS root.
    */
-  if(!handle || !context)
+  if(!p_object_handle || !p_context)
     Return(ERR_FSAL_FAULT, 0, INDEX_FSAL_lookup);
 
-  memset(handle, 0, sizeof(dmlitefsal_handle_t));
+  /* filename AND parent handle are NULL => lookup "/" */
+  if((p_parent_directory_handle && !p_filename)
+     || (!p_parent_directory_handle && p_filename))
+    Return(ERR_FSAL_FAULT, 0, INDEX_FSAL_lookup);
 
-  /* retrieves root handle */
-
-  if(!parent)
+  /* get information about root */
+  if(!p_parent_directory_handle)
     {
-      /* check that filename is NULL,
-       * else, parent should not
-       * be NULL.
-       */
-      if(filename != NULL)
-        Return(ERR_FSAL_FAULT, 0, INDEX_FSAL_lookup);
-
-      /* Ceph seems to have a constant identifying the root inode.
-	 Possible source of bugs, so check here if trouble */
-
-      VINODE(handle).ino.val = CEPH_INO_ROOT;
-      VINODE(handle).snapid.val = CEPH_NOSNAP;
-
-      if(object_attributes)
+      /* Copy the root handle */
+      memcpy( (char *)&vfs_handle->data.vfs_handle,
+	     (char *)&vfs_context->export_context->root_handle,
+	      sizeof( vfs_file_handle_t ) ) ;
+       
+      /* get attributes, if asked */
+      if(p_object_attributes)
         {
-          status = DMLITEFSAL_getattrs(exthandle, extcontext, object_attributes);
-
+          status = VFSFSAL_getattrs(p_object_handle, p_context, p_object_attributes);
           if(FSAL_IS_ERROR(status))
             {
-              FSAL_CLEAR_MASK(object_attributes->asked_attributes);
-              FSAL_SET_MASK(object_attributes->asked_attributes,
-                            FSAL_ATTR_RDATTR_ERR);
+              FSAL_CLEAR_MASK(p_object_attributes->asked_attributes);
+              FSAL_SET_MASK(p_object_attributes->asked_attributes, FSAL_ATTR_RDATTR_ERR);
             }
         }
+      /* Done */
+      Return(ERR_FSAL_NO_ERROR, 0, INDEX_FSAL_lookup);
     }
-  else                          /* this is a real lookup(parent, name)  */
+
+  /* retrieve directory attributes */
+  TakeTokenFSCall();
+  status =
+      fsal_internal_handle2fd(p_context, p_parent_directory_handle, &parentfd, O_RDONLY);
+  ReleaseTokenFSCall();
+  if(FSAL_IS_ERROR(status))
+    ReturnStatus(status, INDEX_FSAL_lookup);
+
+  /* get directory metadata */
+  TakeTokenFSCall();
+  rc = fstat(parentfd, &buffstat);
+  errsv = errno;
+  ReleaseTokenFSCall();
+
+  if(rc)
     {
-      /* the filename should not be null */
-      if(filename == NULL)
-        Return(ERR_FSAL_FAULT, 0, INDEX_FSAL_lookup);
+      close( parentfd ) ;
 
-      FSAL_name2str(filename, str, FSAL_MAX_NAME_LEN);
+      if(errsv == ENOENT)
+        Return(ERR_FSAL_STALE, errsv, INDEX_FSAL_lookup);
+      else
+        Return(posix2fsal_error(errsv), errsv, INDEX_FSAL_lookup);
+    }
 
-      // TODO: dmlite_lookup
+  /* Be careful about junction crossing, symlinks, hardlinks,... */
+  switch (posix2fsal_type(buffstat.st_mode))
+    {
+    case FSAL_TYPE_DIR:
+      // OK
+      break;
 
-      if(rc)
+    case FSAL_TYPE_JUNCTION:
+      // This is a junction
+      close( parentfd ) ;
+      Return(ERR_FSAL_XDEV, 0, INDEX_FSAL_lookup);
+
+    case FSAL_TYPE_FILE:
+    case FSAL_TYPE_LNK:
+    case FSAL_TYPE_XATTR:
+      // not a directory 
+      close( parentfd ) ;
+      Return(ERR_FSAL_NOTDIR, 0, INDEX_FSAL_lookup);
+
+    default:
+      close( parentfd ) ;
+      Return(ERR_FSAL_SERVERFAULT, 0, INDEX_FSAL_lookup);
+    }
+
+  LogFullDebug(COMPONENT_FSAL, "lookup of inode=%"PRIu64"/%s", buffstat.st_ino,
+          p_filename->name);
+
+  /* check rights to enter into the directory */
+  status = fsal_check_access(p_context, FSAL_X_OK, &buffstat, NULL);
+  if(FSAL_IS_ERROR(status))
+    ReturnStatus(status, INDEX_FSAL_lookup);
+
+   /* get file handle, it it exists */
+  TakeTokenFSCall();
+
+  vfs_handle->data.vfs_handle.handle_bytes = VFS_HANDLE_LEN ;
+  if( vfs_name_by_handle_at( parentfd,  p_filename->name,
+			     &vfs_handle->data.vfs_handle) != 0 )
+   {
+      errsv = errno;
+      ReleaseTokenFSCall();
+      close( parentfd ) ;
+      Return(posix2fsal_error(errsv), errsv, INDEX_FSAL_lookup);
+   }
+
+  ReleaseTokenFSCall();
+  close( parentfd ) ;
+
+
+  /* get object attributes */
+  if(p_object_attributes)
+    {
+      status = VFSFSAL_getattrs(p_object_handle, p_context, p_object_attributes);
+      if(FSAL_IS_ERROR(status))
         {
-          Return(posix2fsal_error(rc), 0, INDEX_FSAL_lookup);
-        }
-
-      // TODO: dmlite_stat2fsal_fh
-
-      if (rc < 0)
-        Return(posix2fsal_error(rc), 0, INDEX_FSAL_create);
-
-      if(object_attributes)
-        {
-          /* convert attributes */
-          status = posix2fsal_attributes(&st, object_attributes);
-          if(FSAL_IS_ERROR(status))
-            {
-              FSAL_CLEAR_MASK(object_attributes->asked_attributes);
-              FSAL_SET_MASK(object_attributes->asked_attributes,
-                            FSAL_ATTR_RDATTR_ERR);
-              Return(ERR_FSAL_NO_ERROR, 0, INDEX_FSAL_lookup);
-            }
+          FSAL_CLEAR_MASK(p_object_attributes->asked_attributes);
+          FSAL_SET_MASK(p_object_attributes->asked_attributes, FSAL_ATTR_RDATTR_ERR);
         }
     }
 
   /* lookup complete ! */
   Return(ERR_FSAL_NO_ERROR, 0, INDEX_FSAL_lookup);
 
-}
-
-/**
- * FSAL_lookupJunction :
- * Get the fileset root for a junction.
- *
- * \param p_junction_handle (input)
- *        Handle of the junction to be looked up.
- * \param cred (input)
- *        Authentication context for the operation (user,...).
- * \param p_fsroot_handle (output)
- *        The handle of root directory of the fileset.
- * \param p_fsroot_attributes (optional input/output)
- *        Pointer to the attributes of the root directory
- *        for the fileset.
- *        As input, it defines the attributes that the caller
- *        wants to retrieve (by positioning flags into this structure)
- *        and the output is built considering this input
- *        (it fills the structure according to the flags it contains).
- *        It can be NULL (increases performances).
- *
- * \return Major error codes :
- *        - ERR_FSAL_NO_ERROR     (no error)
- *        - ERR_FSAL_STALE        (p_junction_handle does not address an existing object)
- *        - ERR_FSAL_FAULT        (a NULL pointer was passed as mandatory argument)
- *        - Other error codes can be returned :
- *          ERR_FSAL_ACCESS, ERR_FSAL_IO, ...
- *
- */
-fsal_status_t DMLITEFSAL_lookupJunction(fsal_handle_t * extjunction,
-                                      fsal_op_context_t * extcontext,
-                                      fsal_handle_t * extfsroot,
-                                      fsal_attrib_list_t * fsroot_attributes)
-{
-  Return(ERR_FSAL_SERVERFAULT, 0, INDEX_FSAL_lookup);
 }
 
 /**
@@ -219,92 +224,77 @@ fsal_status_t DMLITEFSAL_lookupJunction(fsal_handle_t * extjunction,
  *        and the output is built considering this input
  *        (it fills the structure according to the flags it contains).
  *        It can be NULL (increases performances).
- *
- * \return Major error codes :
- *        - ERR_FSAL_NO_ERROR     (no error)
- *        - ERR_FSAL_FAULT        (a NULL pointer was passed as mandatory argument)
- *        - ERR_FSAL_INVAL        (the path argument is not absolute)
- *        - ERR_FSAL_NOENT        (an element in the path does not exist)
- *        - ERR_FSAL_NOTDIR       (an element in the path is not a directory)
- *        - ERR_FSAL_XDEV         (tried to cross a filesystem junction,
- *                                 whereas is has not been authorized in the server
- *                                 configuration - FSAL::auth_xdev_export parameter)
- *        - Other error codes can be returned :
- *          ERR_FSAL_ACCESS, ERR_FSAL_IO, ...
  */
 
-fsal_status_t DMLITEFSAL_lookupPath(fsal_path_t * path,
-                                  fsal_op_context_t * extcontext,
-                                  fsal_handle_t * exthandle,
-                                  fsal_attrib_list_t * object_attributes)
+fsal_status_t VFSFSAL_lookupPath(fsal_path_t * p_path,  /* IN */
+                                 fsal_op_context_t * p_context,      /* IN */
+                                 fsal_handle_t * object_handle,      /* OUT */
+                                 fsal_attrib_list_t * p_object_attributes       /* [ IN/OUT ] */
+    )
 {
-  int rc;
-  struct stat st;
   fsal_status_t status;
-  dmlitefsal_handle_t* handle = (dmlitefsal_handle_t*) exthandle;
-  dmlitefsal_op_context_t* context = (dmlitefsal_op_context_t*) extcontext;
-  char str[FSAL_MAX_PATH_LEN];
 
   /* sanity checks
-   * note : object_attributes is optionnal
-   *        parent_directory_handle may be null for getting FS root.
+   * note : object_attributes is optional.
    */
-  if(!path || !context || !handle)
+
+  if(!object_handle || !p_context || !p_path)
     Return(ERR_FSAL_FAULT, 0, INDEX_FSAL_lookupPath);
 
-  memset(handle, 0, sizeof(dmlitefsal_handle_t));
+  /* test whether the path begins with a slash */
 
-  FSAL_path2str(path, str, FSAL_MAX_PATH_LEN);
+  if(p_path->path[0] != '/')
+    Return(ERR_FSAL_INVAL, 0, INDEX_FSAL_lookupPath);
 
-  /* retrieves root handle */
+  /* directly call the lookup function */
 
-  if((strcmp(str, "/") == 0))
+  status = fsal_internal_Path2Handle(p_context, p_path, object_handle);
+  if(FSAL_IS_ERROR(status))
+    ReturnStatus(status, INDEX_FSAL_lookupPath);
+
+  /* get object attributes */
+  if(p_object_attributes)
     {
-      VINODE(handle).ino.val = CEPH_INO_ROOT;
-      VINODE(handle).snapid.val = CEPH_NOSNAP;
-
-      if(object_attributes)
+      status = VFSFSAL_getattrs(object_handle, p_context, p_object_attributes);
+      if(FSAL_IS_ERROR(status))
         {
-          status = DMLITEFSAL_getattrs(exthandle, extcontext,
-                                     object_attributes);
-
-          /* On error, we set a flag in the returned attributes */
-
-          if(FSAL_IS_ERROR(status))
-            {
-              FSAL_CLEAR_MASK(object_attributes->asked_attributes);
-              FSAL_SET_MASK(object_attributes->asked_attributes,
-                            FSAL_ATTR_RDATTR_ERR);
-            }
-        }
-    }
-  else                          /* this is a real lookup(parent, name)  */
-    {
-      // TODO: dmlite_lookup
-
-      if(rc)
-        {
-          Return(posix2fsal_error(rc), 0, INDEX_FSAL_lookupPath);
-        }
-
-      // TODO: dmlite_stat2fsal_fh
-
-      if (rc < 0)
-        Return(posix2fsal_error(rc), 0, INDEX_FSAL_create);
-
-      if(object_attributes)
-        {
-          status = posix2fsal_attributes(&st, object_attributes);
-          if(FSAL_IS_ERROR(status))
-            {
-              FSAL_CLEAR_MASK(object_attributes->asked_attributes);
-              FSAL_SET_MASK(object_attributes->asked_attributes,
-                            FSAL_ATTR_RDATTR_ERR);
-              Return(ERR_FSAL_NO_ERROR, 0, INDEX_FSAL_getattrs);
-            }
+          FSAL_CLEAR_MASK(p_object_attributes->asked_attributes);
+          FSAL_SET_MASK(p_object_attributes->asked_attributes, FSAL_ATTR_RDATTR_ERR);
         }
     }
 
-  /* lookup complete ! */
-  Return(ERR_FSAL_NO_ERROR, 0, INDEX_FSAL_lookup);
+  Return(ERR_FSAL_NO_ERROR, 0, INDEX_FSAL_lookupPath);
+
+}
+
+/**
+ * FSAL_lookupJunction :
+ * Get the fileset root for a junction.
+ *
+ * \param p_junction_handle (input)
+ *        Handle of the junction to be looked up.
+ * \param p_context (input)
+ *        Authentication context for the operation (user,...).
+ * \param p_fsroot_handle (output)
+ *        The handle of root directory of the fileset.
+ * \param p_fsroot_attributes (optional input/output)
+ *        Pointer to the attributes of the root directory
+ *        for the fileset.
+ *        As input, it defines the attributes that the caller
+ *        wants to retrieve (by positioning flags into this structure)
+ *        and the output is built considering this input
+ *        (it fills the structure according to the flags it contains).
+ *        It can be NULL (increases performances).
+ *
+ * \return - ERR_FSAL_NO_ERROR, if no error.
+ *         - Another error code else.
+ *          
+ */
+fsal_status_t VFSFSAL_lookupJunction(fsal_handle_t * p_junction_handle,      /* IN */
+                                     fsal_op_context_t * p_context,  /* IN */
+                                     fsal_handle_t * p_fsoot_handle, /* OUT */
+                                     fsal_attrib_list_t * p_fsroot_attributes   /* [ IN/OUT ] */
+    )
+{
+  Return(ERR_FSAL_NO_ERROR, 0, INDEX_FSAL_lookupJunction);
 }

@@ -1,10 +1,7 @@
 /*
  * vim:expandtab:shiftwidth=8:tabstop=8:
  *
- * Copyright (C) 2010 The Linux Box, Inc.
- * Contributor : Adam C. Emerson <aemerson@linuxbox.com>
- *
- * Portions copyright CEA/DAM/DIF  (2008)
+ * Copyright CEA/DAM/DIF  (2008)
  * contributeur : Philippe DENIEL   philippe.deniel@cea.fr
  *                Thomas LEIBOVICI  thomas.leibovici@cea.fr
  *
@@ -23,12 +20,15 @@
  * License along with this library; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  *
- * -------------
+ * ------------- 
  */
 
 /**
  *
  * \file    fsal_unlink.c
+ * \author  $Author: leibovic $
+ * \date    $Date: 2006/01/24 13:45:37 $
+ * \version $Revision: 1.9 $
  * \brief   object removing function.
  *
  */
@@ -38,7 +38,9 @@
 
 #include "fsal.h"
 #include "fsal_internal.h"
+#include "FSAL/access_check.h"
 #include "fsal_convert.h"
+#include <unistd.h>
 
 /**
  * FSAL_unlink:
@@ -48,7 +50,7 @@
  *        Handle of the parent directory of the object to be deleted.
  * \param p_object_name (input):
  *        Name of the object to be removed.
- * \param p_context (input):
+ * \param cred (input):
  *        Authentication context for the operation (user,...).
  * \param parentdir_attributes (optionnal input/output): 
  *        Post operation attributes of the parent directory.
@@ -60,69 +62,113 @@
  *
  * \return Major error codes :
  *        - ERR_FSAL_NO_ERROR     (no error)
- *        - ERR_FSAL_STALE        (parentdir_handle does not address an existing object)
- *        - ERR_FSAL_NOTDIR       (parentdir_handle does not address a directory)
- *        - ERR_FSAL_NOENT        (the object designated by p_object_name does not exist)
- *        - ERR_FSAL_NOTEMPTY     (tried to remove a non empty directory)
- *        - ERR_FSAL_FAULT        (a NULL pointer was passed as mandatory argument)
- *        - Other error codes can be returned :
- *          ERR_FSAL_ACCESS, ERR_FSAL_IO, ...
+ *        - Another error code if an error occured.
  */
 
-fsal_status_t CEPHFSAL_unlink(fsal_handle_t * extparent,
-                              fsal_name_t * name,
-                              fsal_op_context_t * extcontext,
-                              fsal_attrib_list_t * parentdir_attributes)
+fsal_status_t VFSFSAL_unlink(fsal_handle_t * p_parent_directory_handle,    /* IN */
+                          fsal_name_t * p_object_name,  /* IN */
+                          fsal_op_context_t * p_context,        /* IN */
+                          fsal_attrib_list_t * p_parent_directory_attributes    /* [IN/OUT ] */
+    )
 {
-  int rc;
-  struct stat st;
+
   fsal_status_t status;
-  char strname[FSAL_MAX_NAME_LEN];
-  cephfsal_handle_t* parent = (cephfsal_handle_t*) extparent;
-  cephfsal_op_context_t* context = (cephfsal_op_context_t*) extcontext;
-  struct ceph_mount_info *cmount = context->export_context->cmount;
-  int uid = FSAL_OP_CONTEXT_TO_UID(context);
-  int gid = FSAL_OP_CONTEXT_TO_GID(context);
+  int rc, errsv;
+  struct stat buffstat, buffstat_parent;
+  int fd;
+  uid_t user = ((vfsfsal_op_context_t *)p_context)->credential.user;
 
-  /* sanity checks.
-   * note : parentdir_attributes are optional.
-   *        parentdir_handle is mandatory,
-   *        because, we do not allow to delete FS root !
-   */
-
-  if(!parent || !context || !name)
+  /* sanity checks. */
+  if(!p_parent_directory_handle || !p_context || !p_object_name)
     Return(ERR_FSAL_FAULT, 0, INDEX_FSAL_unlink);
 
-  if(parentdir_attributes)
-    {
-      status = CEPHFSAL_getattrs(extparent, extcontext,
-                                 parentdir_attributes);
+  /* build the FID path */
+  TakeTokenFSCall();
+  status =
+      fsal_internal_handle2fd(p_context, p_parent_directory_handle, &fd,
+                              O_RDONLY | O_DIRECTORY);
+  ReleaseTokenFSCall();
+  if(FSAL_IS_ERROR(status))
+    ReturnStatus(status, INDEX_FSAL_unlink);
 
+  /* get directory metadata */
+  TakeTokenFSCall();
+  rc = fstat(fd, &buffstat_parent);
+  errsv = errno;
+  ReleaseTokenFSCall();
+  if(rc)
+    {
+      close(fd);
+
+      if(errsv == ENOENT)
+        Return(ERR_FSAL_STALE, errsv, INDEX_FSAL_unlink);
+      else
+        Return(posix2fsal_error(errsv), errsv, INDEX_FSAL_unlink);
+    }
+
+  /* build the child path */
+
+  /* get file metadata */
+  TakeTokenFSCall();
+  rc = fstatat(fd, p_object_name->name, &buffstat, AT_SYMLINK_NOFOLLOW);
+  errsv = errno;
+  ReleaseTokenFSCall();
+  if(rc)
+    {
+      close(fd);
+      Return(posix2fsal_error(errno), errno, INDEX_FSAL_unlink);
+    }
+
+  /* check access rights */
+
+  /* Sticky bit on the directory => the user who wants to delete the file must own it or its parent dir */
+  if((buffstat_parent.st_mode & S_ISVTX)
+     && buffstat_parent.st_uid != user
+     && buffstat.st_uid != user && user != 0)
+    {
+      close(fd);
+      Return(ERR_FSAL_ACCESS, 0, INDEX_FSAL_unlink);
+    }
+
+  /* client must be able to lookup the parent directory and modify it */
+  status =
+      fsal_check_access(p_context, FSAL_W_OK | FSAL_X_OK, &buffstat_parent, NULL);
+  if(FSAL_IS_ERROR(status))
+    ReturnStatus(status, INDEX_FSAL_unlink);
+
+  /******************************
+   * DELETE FROM THE FILESYSTEM *
+   ******************************/
+  TakeTokenFSCall();
+  /* If the object to delete is a directory, use 'rmdir' to delete the object, else use 'unlink' */
+  rc = (S_ISDIR(buffstat.st_mode)) ? unlinkat(fd, p_object_name->name,
+                                              AT_REMOVEDIR) : unlinkat(fd,
+                                                                       p_object_name->
+                                                                       name, 0);
+  errsv = errno;
+  ReleaseTokenFSCall();
+
+  close(fd);
+
+  if(rc)
+    Return(posix2fsal_error(errsv), errsv, INDEX_FSAL_unlink);
+
+  /***********************
+   * FILL THE ATTRIBUTES *
+   ***********************/
+
+  if(p_parent_directory_attributes)
+    {
+      status =
+          VFSFSAL_getattrs(p_parent_directory_handle, p_context,
+                        p_parent_directory_attributes);
       if(FSAL_IS_ERROR(status))
         {
-          FSAL_CLEAR_MASK(parentdir_attributes->asked_attributes);
-          FSAL_SET_MASK(parentdir_attributes->asked_attributes,
+          FSAL_CLEAR_MASK(p_parent_directory_attributes->asked_attributes);
+          FSAL_SET_MASK(p_parent_directory_attributes->asked_attributes,
                         FSAL_ATTR_RDATTR_ERR);
         }
     }
-
-  FSAL_name2str(name, strname, FSAL_MAX_NAME_LEN);
-
-  TakeTokenFSCall();
-  rc = ceph_ll_lookup(cmount, VINODE(parent), strname, &st, uid, gid);
-  ReleaseTokenFSCall();
-
-  if (rc < 0)
-    Return(posix2fsal_error(rc), 0, INDEX_FSAL_unlink);
-
-  if(S_ISDIR(st.st_mode))
-      rc = ceph_ll_rmdir(cmount, VINODE(parent), strname, uid, gid);
-  else
-      rc = ceph_ll_unlink(cmount, VINODE(parent), strname, uid, gid);
-
-  if (rc < 0)
-    Return(posix2fsal_error(rc), 0, INDEX_FSAL_unlink);
-
   /* OK */
   Return(ERR_FSAL_NO_ERROR, 0, INDEX_FSAL_unlink);
 

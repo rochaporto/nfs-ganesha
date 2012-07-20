@@ -1,9 +1,7 @@
 /*
  * vim:expandtab:shiftwidth=8:tabstop=8:
  *
- * Copyright (C) 2012, CERN IT/GT/DMS <it-dep-gt-dms@cern.ch>
- *
- * Portions copyright CEA/DAM/DIF  (2008)
+ * Copyright CEA/DAM/DIF  (2008)
  * contributeur : Philippe DENIEL   philippe.deniel@cea.fr
  *                Thomas LEIBOVICI  thomas.leibovici@cea.fr
  *
@@ -22,11 +20,14 @@
  * License along with this library; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  *
- * -------------
+ * ------------- 
  */
 
 /**
  * \file    fsal_symlinks.c
+ * \author  $Author: leibovic $
+ * \date    $Date: 2005/07/29 09:39:04 $
+ * \version $Revision: 1.15 $
  * \brief   symlinks operations.
  *
  */
@@ -36,8 +37,10 @@
 
 #include "fsal.h"
 #include "fsal_internal.h"
+#include "FSAL/access_check.h"
 #include "fsal_convert.h"
 #include <string.h>
+#include <unistd.h>
 
 /**
  * FSAL_readlink:
@@ -60,57 +63,64 @@
  *
  * \return Major error codes :
  *        - ERR_FSAL_NO_ERROR     (no error)
- *        - ERR_FSAL_STALE        (linkhandle does not address an existing object)
- *        - ERR_FSAL_INVAL        (linkhandle does not address a symbolic link)
- *        - ERR_FSAL_FAULT        (a NULL pointer was passed as mandatory argument)
- *        - Other error codes can be returned :
- *          ERR_FSAL_ACCESS, ERR_FSAL_IO, ...
- * */
-
-fsal_status_t DMLITEFSAL_readlink(fsal_handle_t * exthandle,
-                                fsal_op_context_t * extcontext,
-                                fsal_path_t * link_content,
-                                fsal_attrib_list_t * link_attributes)
+ *        - Another error code if an error occured.
+ */
+fsal_status_t VFSFSAL_readlink(fsal_handle_t * p_linkhandle,       /* IN */
+                            fsal_op_context_t * p_context,      /* IN */
+                            fsal_path_t * p_link_content,       /* OUT */
+                            fsal_attrib_list_t * p_link_attributes      /* [ IN/OUT ] */
+    )
 {
-  int rc;
-  fsal_status_t st;
-  dmlitefsal_handle_t* handle = (dmlitefsal_handle_t*) exthandle;
-  dmlitefsal_op_context_t* context = (dmlitefsal_op_context_t*) extcontext;
-  char strcontent[FSAL_MAX_PATH_LEN];
-  int uid = FSAL_OP_CONTEXT_TO_UID(context);
-  int gid = FSAL_OP_CONTEXT_TO_GID(context);
+
+  int rc, errsv;
+  fsal_status_t status;
+  char link_content_out[FSAL_MAX_PATH_LEN];
 
   /* sanity checks.
    * note : link_attributes is optional.
    */
-  if(!handle || !context || !link_content)
+  if(!p_linkhandle || !p_context || !p_link_content)
     Return(ERR_FSAL_FAULT, 0, INDEX_FSAL_readlink);
 
-  // TODO: dmlite_readlink
+  memset(link_content_out, 0, FSAL_MAX_PATH_LEN);
 
-  if (rc < 0)
-    Return(posix2fsal_error(rc), 0, INDEX_FSAL_open);
+  /* Read the link on the filesystem */
+  TakeTokenFSCall();
+  rc = vfs_readlink_by_handle(((vfsfsal_op_context_t *)p_context)->export_context->mount_root_fd,
+			      &((vfsfsal_handle_t *)p_linkhandle)->data.vfs_handle,
+                               link_content_out,
+                               FSAL_MAX_PATH_LEN ) ;
+  errsv = errno;
+  ReleaseTokenFSCall();
 
-  st = FSAL_str2path(strcontent, FSAL_MAX_PATH_LEN, link_content);
+  if( rc == -1 )
+    Return(posix2fsal_error(errsv), errsv, INDEX_FSAL_readlink);
 
-  if(FSAL_IS_ERROR(st))
-    Return(st.major, st.minor, INDEX_FSAL_readlink);
+  /* convert char * to fsal_path_t */
+  status = FSAL_str2path(link_content_out, FSAL_MAX_PATH_LEN, p_link_content);
+
+  if(FSAL_IS_ERROR(status))
+    ReturnStatus(status, INDEX_FSAL_readlink);
 
   /* retrieves object attributes, if asked */
 
-  if(link_attributes)
+  if(p_link_attributes)
     {
-      fsal_status_t status =
-        DMLITEFSAL_getattrs(exthandle, extcontext, link_attributes);
+
+      status = VFSFSAL_getattrs(p_linkhandle, p_context, p_link_attributes);
+
+      /* On error, we set a flag in the returned attributes */
 
       if(FSAL_IS_ERROR(status))
         {
-          FSAL_CLEAR_MASK(link_attributes->asked_attributes);
-          FSAL_SET_MASK(link_attributes->asked_attributes, FSAL_ATTR_RDATTR_ERR);
+          FSAL_CLEAR_MASK(p_link_attributes->asked_attributes);
+          FSAL_SET_MASK(p_link_attributes->asked_attributes, FSAL_ATTR_RDATTR_ERR);
         }
 
     }
+
   Return(ERR_FSAL_NO_ERROR, 0, INDEX_FSAL_readlink);
+
 }
 
 /**
@@ -127,7 +137,7 @@ fsal_status_t DMLITEFSAL_readlink(fsal_handle_t * exthandle,
  *        Authentication context for the operation (user,...).
  * \param accessmode (ignored input):
  *        Mode of the link to be created.
- *        It has no sense in HPSS nor UNIX filesystems.
+ *        It has no sense in VFS nor UNIX filesystems.
  * \param link_handle (output):
  *        Pointer to the handle of the created symlink.
  * \param link_attributes (optionnal input/output): 
@@ -140,68 +150,123 @@ fsal_status_t DMLITEFSAL_readlink(fsal_handle_t * exthandle,
  *
  * \return Major error codes :
  *        - ERR_FSAL_NO_ERROR     (no error)
- *        - ERR_FSAL_STALE        (parent_directory_handle does not address an existing object)
- *        - ERR_FSAL_NOTDIR       (parent_directory_handle does not address a directory)
- *        - ERR_FSAL_FAULT        (a NULL pointer was passed as mandatory argument)
- *        - Other error codes can be returned :
- *          ERR_FSAL_ACCESS, ERR_FSAL_IO, ...
+ *        - Another error code if an error occured.
  */
-
-fsal_status_t DMLITEFSAL_symlink(fsal_handle_t * extparent,
-                               fsal_name_t * linkname,
-                               fsal_path_t * linkcontent,
-                               fsal_op_context_t * extcontext,
-                               fsal_accessmode_t accessmode,
-                               fsal_handle_t * extlink,
-                               fsal_attrib_list_t * link_attributes)
+fsal_status_t VFSFSAL_symlink(fsal_handle_t * p_parent_directory_handle,   /* IN */
+                           fsal_name_t * p_linkname,    /* IN */
+                           fsal_path_t * p_linkcontent, /* IN */
+                           fsal_op_context_t * p_context,       /* IN */
+                           fsal_accessmode_t accessmode,        /* IN (ignored) */
+                           fsal_handle_t * p_link_handle,       /* OUT */
+                           fsal_attrib_list_t * p_link_attributes       /* [ IN/OUT ] */
+    )
 {
-  int rc;
-  struct stat st;
-  dmlitefsal_handle_t* parent = (dmlitefsal_handle_t*) extparent;
-  dmlitefsal_handle_t* link = (dmlitefsal_handle_t*) extlink;
-  dmlitefsal_op_context_t* context = (dmlitefsal_op_context_t*) extcontext;
-  int uid = FSAL_OP_CONTEXT_TO_UID(context);
-  int gid = FSAL_OP_CONTEXT_TO_GID(context);
-  char strpath[FSAL_MAX_PATH_LEN];
-  char strname[FSAL_MAX_NAME_LEN];
+
+  int rc, errsv;
+  fsal_status_t status;
+  int fd;
+  struct stat buffstat;
+  int setgid_bit = FALSE;
 
   /* sanity checks.
    * note : link_attributes is optional.
    */
-  if(!parent || !context || !link || !linkname || !linkcontent)
+  if(!p_parent_directory_handle || !p_context ||
+     !p_link_handle || !p_linkname || !p_linkcontent)
     Return(ERR_FSAL_FAULT, 0, INDEX_FSAL_symlink);
-
-  FSAL_path2str(linkcontent, strpath, FSAL_MAX_PATH_LEN);
-  FSAL_name2str(linkname, strname, FSAL_MAX_NAME_LEN);
 
   /* Tests if symlinking is allowed by configuration. */
 
   if(!global_fs_info.symlink_support)
     Return(ERR_FSAL_NOTSUPP, 0, INDEX_FSAL_symlink);
 
-  // TODO: dmlite_symlink
+  TakeTokenFSCall();
+  status =
+      fsal_internal_handle2fd(p_context, p_parent_directory_handle, &fd,
+                              O_RDONLY | O_DIRECTORY);
+  ReleaseTokenFSCall();
 
-  if (rc)
-    Return(posix2fsal_error(rc), 0, INDEX_FSAL_symlink);
+  if(FSAL_IS_ERROR(status))
+    ReturnStatus(status, INDEX_FSAL_symlink);
 
-  // TODO: dmlite_stat2fsal_fh
+  /* retrieve directory metadata, for checking access */
+  TakeTokenFSCall();
+  rc = fstat(fd, &buffstat);
+  errsv = errno;
+  ReleaseTokenFSCall();
 
-  if (rc < 0)
-    Return(posix2fsal_error(rc), 0, INDEX_FSAL_create);
-
-  if(link_attributes)
+  if(rc)
     {
-      /* convert attributes */
-      fsal_status_t status = posix2fsal_attributes(&st, link_attributes);
+      close(fd);
+
+      if(errsv == ENOENT)
+        Return(ERR_FSAL_STALE, errsv, INDEX_FSAL_symlink);
+      else
+        Return(posix2fsal_error(errsv), errsv, INDEX_FSAL_symlink);
+    }
+
+  if(buffstat.st_mode & S_ISGID)
+    setgid_bit = TRUE;
+
+  status = fsal_check_access(p_context, FSAL_W_OK, &buffstat, NULL);
+  if(FSAL_IS_ERROR(status))
+    ReturnStatus(status, INDEX_FSAL_symlink);
+
+  /* build symlink path */
+
+  /* create the symlink on the filesystem. */
+
+  TakeTokenFSCall();
+  rc = symlinkat(p_linkcontent->path, fd, p_linkname->name);
+  errsv = errno;
+  ReleaseTokenFSCall();
+
+  if(rc)
+    {
+      close(fd);
+      Return(posix2fsal_error(errsv), errsv, INDEX_FSAL_symlink);
+    }
+
+  /* now get the associated handle, while there is a race, there is
+     also a race lower down  */
+  status = fsal_internal_get_handle_at(fd, p_linkname->name, p_link_handle);
+
+  if(FSAL_IS_ERROR(status))
+    {
+      close(fd);
+      ReturnStatus(status, INDEX_FSAL_symlink);
+    }
+
+  /* chown the symlink to the current user/group */
+  TakeTokenFSCall();
+  rc = fchownat(fd, p_linkname->name, ((vfsfsal_op_context_t *)p_context)->credential.user,
+                setgid_bit ? -1 : ((vfsfsal_op_context_t *)p_context)->credential.group,
+		AT_SYMLINK_NOFOLLOW);
+  errsv = errno;
+  ReleaseTokenFSCall();
+
+  close(fd);
+
+  if(rc)
+    Return(posix2fsal_error(errsv), errsv, INDEX_FSAL_symlink);
+
+  /* get attributes if asked */
+
+  if(p_link_attributes)
+    {
+
+      status = VFSFSAL_getattrs(p_link_handle, p_context, p_link_attributes);
+
+      /* On error, we set a flag in the returned attributes */
+
       if(FSAL_IS_ERROR(status))
         {
-          FSAL_CLEAR_MASK(link_attributes->asked_attributes);
-          FSAL_SET_MASK(link_attributes->asked_attributes, FSAL_ATTR_RDATTR_ERR);
-          Return(ERR_FSAL_NO_ERROR, 0, INDEX_FSAL_symlink);
+          FSAL_CLEAR_MASK(p_link_attributes->asked_attributes);
+          FSAL_SET_MASK(p_link_attributes->asked_attributes, FSAL_ATTR_RDATTR_ERR);
         }
+
     }
 
   /* OK */
   Return(ERR_FSAL_NO_ERROR, 0, INDEX_FSAL_symlink);
 }
-

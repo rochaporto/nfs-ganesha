@@ -1,9 +1,7 @@
 /*
  * vim:expandtab:shiftwidth=8:tabstop=8:
  *
- * Copyright (C) 2012, CERN IT/GT/DMS <it-dep-gt-dms@cern.ch>
- *
- * Portions copyright CEA/DAM/DIF  (2008)
+ * Copyright CEA/DAM/DIF  (2008)
  * contributeur : Philippe DENIEL   philippe.deniel@cea.fr
  *                Thomas LEIBOVICI  thomas.leibovici@cea.fr
  *
@@ -28,6 +26,9 @@
 /**
  *
  * \file    fsal_rename.c
+ * \author  $Author: leibovic $
+ * \date    $Date: 2006/01/24 13:45:37 $
+ * \version $Revision: 1.9 $
  * \brief   object renaming/moving function.
  *
  */
@@ -37,6 +38,7 @@
 
 #include "fsal.h"
 #include "fsal_internal.h"
+#include "FSAL/access_check.h"
 #include "fsal_convert.h"
 
 /**
@@ -51,7 +53,7 @@
  *        Target parent directory for the object.
  * \param p_new_name (input):
  *        Pointer to the new name for the object.
- * \param p_context (input):
+ * \param cred (input):
  *        Authentication context for the operation (user,...).
  * \param src_dir_attributes (optionnal input/output): 
  *        Post operation attributes for the source directory.
@@ -70,88 +72,224 @@
  *
  * \return Major error codes :
  *        - ERR_FSAL_NO_ERROR     (no error)
- *        - ERR_FSAL_STALE        (a parent directory handle does not address an existing object)
- *        - ERR_FSAL_NOTDIR       (a parent directory handle does not address a directory)
- *        - ERR_FSAL_NOENT        (the object designated by p_old_name does not exist)
- *        - ERR_FSAL_NOTEMPTY     (the target object is a non empty directory)
- *        - ERR_FSAL_XDEV         (tried to move an object across different filesystems)
- *        - ERR_FSAL_FAULT        (a NULL pointer was passed as mandatory argument)
- *        - Other error codes can be returnoed :
-  *          ERR_FSAL_ACCESS, ERR_FSAL_IO, ...
-  */
+ *        - Another error code if an error occured.
+ */
 
-fsal_status_t DMLITEFSAL_rename(fsal_handle_t * extold_parent,
-                              fsal_name_t * old_name,
-                              fsal_handle_t * extnew_parent,
-                              fsal_name_t * new_name,
-                              fsal_op_context_t * extcontext,
-                              fsal_attrib_list_t * src_dir_attributes,
-                              fsal_attrib_list_t * tgt_dir_attributes)
+fsal_status_t VFSFSAL_rename(fsal_handle_t * p_old_parentdir_handle,       /* IN */
+                          fsal_name_t * p_old_name,     /* IN */
+                          fsal_handle_t * p_new_parentdir_handle,       /* IN */
+                          fsal_name_t * p_new_name,     /* IN */
+                          fsal_op_context_t * p_context,        /* IN */
+                          fsal_attrib_list_t * p_src_dir_attributes,    /* [ IN/OUT ] */
+                          fsal_attrib_list_t * p_tgt_dir_attributes     /* [ IN/OUT ] */
+    )
 {
-  int rc;
-  cephfsal_handle_t* old_parent = (cephfsal_handle_t*) extold_parent;
-  cephfsal_handle_t* new_parent = (cephfsal_handle_t*) extnew_parent;
-  cephfsal_op_context_t* context = (cephfsal_op_context_t*) extcontext;
-  char oldstr[FSAL_MAX_NAME_LEN];
-  char newstr[FSAL_MAX_NAME_LEN];
-  int uid = FSAL_OP_CONTEXT_TO_UID(context);
-  int gid = FSAL_OP_CONTEXT_TO_GID(context);
+
+  int rc, errsv;
+  fsal_status_t status;
+  struct stat old_parent_buffstat, new_parent_buffstat, buffstat;
+  int old_parent_fd, new_parent_fd;
+  int src_equal_tgt = FALSE;
+  uid_t user = ((vfsfsal_op_context_t *)p_context)->credential.user;
 
   /* sanity checks.
    * note : src/tgt_dir_attributes are optional.
    */
-  if(!old_parent || !new_parent || !old_name || !new_name || !context)
+  if(!p_old_parentdir_handle || !p_new_parentdir_handle
+     || !p_old_name || !p_new_name || !p_context)
     Return(ERR_FSAL_FAULT, 0, INDEX_FSAL_rename);
 
-  if(src_dir_attributes)
+  /* Get directory access path by fid */
+
+  TakeTokenFSCall();
+  status = fsal_internal_handle2fd(p_context, p_old_parentdir_handle,
+                                   &old_parent_fd,
+                                   O_RDONLY | O_DIRECTORY);
+  ReleaseTokenFSCall();
+
+  if(FSAL_IS_ERROR(status))
+    ReturnStatus(status, INDEX_FSAL_rename);
+
+  /* retrieve directory metadata for checking access rights */
+
+  TakeTokenFSCall();
+  rc = fstat(old_parent_fd, &old_parent_buffstat);
+  errsv = errno;
+  ReleaseTokenFSCall();
+
+  if(rc)
     {
-      fsal_status_t status =
-        DMLITEFSAL_getattrs(extold_parent, extcontext, src_dir_attributes);
+      close(old_parent_fd);
+      if(errsv == ENOENT)
+        Return(ERR_FSAL_STALE, errsv, INDEX_FSAL_rename);
+      else
+        Return(posix2fsal_error(errsv), errsv, INDEX_FSAL_rename);
+    }
+
+  /* optimisation : don't do the job twice if source dir = dest dir  */
+  if(!FSAL_handlecmp(p_old_parentdir_handle, p_new_parentdir_handle, &status))
+    {
+      new_parent_fd = old_parent_fd;
+      src_equal_tgt = TRUE;
+      new_parent_buffstat = old_parent_buffstat;
+    }
+  else
+    {
+      TakeTokenFSCall();
+      status = fsal_internal_handle2fd(p_context, p_new_parentdir_handle,
+                                       &new_parent_fd,
+                                       O_RDONLY | O_DIRECTORY);
+      ReleaseTokenFSCall();
 
       if(FSAL_IS_ERROR(status))
         {
-          FSAL_CLEAR_MASK(src_dir_attributes->asked_attributes);
-          FSAL_SET_MASK(src_dir_attributes->asked_attributes,
-                        FSAL_ATTR_RDATTR_ERR);
+          close(old_parent_fd);
+          ReturnStatus(status, INDEX_FSAL_rename);
         }
+      /* retrieve destination attrs */
+      TakeTokenFSCall();
+      rc = fstat(new_parent_fd, &new_parent_buffstat);
+      errsv = errno;
+      ReleaseTokenFSCall();
+
+      if(rc)
+        {
+          /* close old and new parent fd */
+          close(old_parent_fd);
+          close(new_parent_fd);
+          if(errsv == ENOENT)
+            Return(ERR_FSAL_STALE, errsv, INDEX_FSAL_rename);
+          else
+            Return(posix2fsal_error(errsv), errsv, INDEX_FSAL_rename);
+        }
+
     }
 
-  if(tgt_dir_attributes)
+  /* check access rights */
+
+  status = fsal_check_access(p_context, FSAL_W_OK | FSAL_X_OK,
+                                    &old_parent_buffstat,
+                                    NULL);
+  if(FSAL_IS_ERROR(status)) {
+    close(old_parent_fd);
+    if (!src_equal_tgt)
+      close(new_parent_fd);
+    ReturnStatus(status, INDEX_FSAL_rename);
+  }
+  if(!src_equal_tgt)
     {
-      fsal_status_t status;
+      status =  fsal_check_access(p_context, FSAL_W_OK | FSAL_X_OK,
+                                         &new_parent_buffstat,
+                                         NULL);
+      if(FSAL_IS_ERROR(status)) {
+        close(old_parent_fd);
+        close(new_parent_fd);
+        ReturnStatus(status, INDEX_FSAL_rename);
+      }
+    }
 
-      /* optimization when src=tgt : */
+  /* build file paths */
+  TakeTokenFSCall();
+  rc = fstatat(old_parent_fd, p_old_name->name, &buffstat, AT_SYMLINK_NOFOLLOW);
+  errsv = errno;
+  ReleaseTokenFSCall();
+  if(rc) {
+    close(old_parent_fd);
+    if (!src_equal_tgt)
+      close(new_parent_fd);
+    Return(posix2fsal_error(errsv), errsv, INDEX_FSAL_rename);
+  }
 
-      if(!DMLITEFSAL_handlecmp(extold_parent, extnew_parent, &status)
-         && src_dir_attributes)
+  /* Check sticky bits */
+
+  /* Sticky bit on the source directory => the user who wants to delete the file must own it or its parent dir */
+  if((old_parent_buffstat.st_mode & S_ISVTX) &&
+     old_parent_buffstat.st_uid != user &&
+     buffstat.st_uid != user && user != 0) {
+    close(old_parent_fd);
+    if (!src_equal_tgt)
+      close(new_parent_fd);
+    Return(ERR_FSAL_ACCESS, 0, INDEX_FSAL_rename);
+  }
+
+  /* Sticky bit on the target directory => the user who wants to create the file must own it or its parent dir */
+  if(new_parent_buffstat.st_mode & S_ISVTX)
+    {
+      TakeTokenFSCall();
+      rc = fstatat(new_parent_fd, p_new_name->name, &buffstat, AT_SYMLINK_NOFOLLOW);
+      errsv = errno;
+      ReleaseTokenFSCall();
+
+      if(rc < 0)
         {
-          /* If source dir = target dir, we just copy the attributes.
-           * to avoid doing another getattr.
-           */
-          (*tgt_dir_attributes) = (*src_dir_attributes);
+          if(errsv != ENOENT)
+            {
+              close(old_parent_fd);
+              if (!src_equal_tgt)
+                close(new_parent_fd);
+              Return(posix2fsal_error(errsv), errsv, INDEX_FSAL_rename);
+            }
         }
       else
         {
-          status = DMLITEFSAL_getattrs(extnew_parent, extcontext,
-                                     tgt_dir_attributes);
 
-          if(FSAL_IS_ERROR(status))
+          if(new_parent_buffstat.st_uid != user
+             && buffstat.st_uid != user
+             && user != 0)
             {
-              FSAL_CLEAR_MASK(tgt_dir_attributes->asked_attributes);
-              FSAL_SET_MASK(tgt_dir_attributes->asked_attributes,
-                            FSAL_ATTR_RDATTR_ERR);
+              close(old_parent_fd);
+              if (!src_equal_tgt)
+                close(new_parent_fd);
+              Return(ERR_FSAL_ACCESS, 0, INDEX_FSAL_rename);
             }
         }
     }
 
-  FSAL_name2str(old_name, oldstr, FSAL_MAX_NAME_LEN);
-  FSAL_name2str(new_name, newstr, FSAL_MAX_NAME_LEN);
+  /*************************************
+   * Rename the file on the filesystem *
+   *************************************/
+  TakeTokenFSCall();
+  rc = renameat(old_parent_fd, p_old_name->name, new_parent_fd, p_new_name->name);
+  errsv = errno;
+  ReleaseTokenFSCall();
+  close(old_parent_fd);
+  if (!src_equal_tgt)
+    close(new_parent_fd);
 
-  // TODO: dmlite_rename
+  if(rc)
+    Return(posix2fsal_error(errsv), errsv, INDEX_FSAL_rename);
 
-  if (rc < 0)
-    Return(posix2fsal_error(rc), 0, INDEX_FSAL_rename);
+  /***********************
+   * Fill the attributes *
+   ***********************/
+
+  if(p_src_dir_attributes)
+    {
+
+      status = VFSFSAL_getattrs(p_old_parentdir_handle, p_context, p_src_dir_attributes);
+
+      if(FSAL_IS_ERROR(status))
+        {
+          FSAL_CLEAR_MASK(p_src_dir_attributes->asked_attributes);
+          FSAL_SET_MASK(p_src_dir_attributes->asked_attributes, FSAL_ATTR_RDATTR_ERR);
+        }
+
+    }
+
+  if(p_tgt_dir_attributes)
+    {
+
+      status = VFSFSAL_getattrs(p_new_parentdir_handle, p_context, p_tgt_dir_attributes);
+
+      if(FSAL_IS_ERROR(status))
+        {
+          FSAL_CLEAR_MASK(p_tgt_dir_attributes->asked_attributes);
+          FSAL_SET_MASK(p_tgt_dir_attributes->asked_attributes, FSAL_ATTR_RDATTR_ERR);
+        }
+
+    }
 
   /* OK */
   Return(ERR_FSAL_NO_ERROR, 0, INDEX_FSAL_rename);
+
 }

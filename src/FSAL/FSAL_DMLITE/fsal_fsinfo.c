@@ -1,32 +1,13 @@
 /*
- *
- * Copyright (C) 2012, CERN IT/GT/DMS <it-dep-gt-dms@cern.ch>
- *
- * Some Portions Copyright CEA/DAM/DIF  (2008)
- * contributeur : Philippe DENIEL   philippe.deniel@cea.fr
- *                Thomas LEIBOVICI  thomas.leibovici@cea.fr
- *
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 3 of the License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
- *
- * ---------------------------------------
+ * vim:expandtab:shiftwidth=4:tabstop=4:
  */
 
 /**
  *
  * \file    fsal_fsinfo.c
+ * \author  $Author: leibovic $
+ * \date    $Date: 2006/01/17 14:20:07 $
+ * \version $Revision: 1.7 $
  * \brief   functions for retrieving filesystem info.
  *
  */
@@ -37,6 +18,7 @@
 #include "fsal.h"
 #include "fsal_internal.h"
 #include "fsal_convert.h"
+#include <sys/statvfs.h>
 
 /**
  * FSAL_dynamic_fsinfo:
@@ -46,48 +28,47 @@
  * \param filehandle (input):
  *        Handle of an object in the filesystem
  *        whom info is to be retrieved.
- * \param p_context (input):
+ * \param cred (input):
  *        Authentication context for the operation (user,...).
  * \param dynamicinfo (output):
  *        Pointer to the static info of the filesystem.
  *
  * \return Major error codes:
- *      - ERR_FSAL_NO_ERROR     (no error)
- *      - ERR_FSAL_FAULT        (a NULL pointer was passed as mandatory argument)
- *      - Other error codes can be returned :
- *        ERR_FSAL_IO, ...
+ *      - ERR_FSAL_NO_ERROR: no error.
+ *      - ERR_FSAL_FAULT: NULL pointer passed as input parameter.
+ *      - ERR_FSAL_SERVERFAULT: Unexpected error.
  */
-fsal_status_t DMLITEFSAL_dynamic_fsinfo(fsal_handle_t * exthandle,
-                                      fsal_op_context_t * extcontext,
-                                      fsal_dynamicfsinfo_t * dynamicinfo)
+fsal_status_t VFSFSAL_dynamic_fsinfo(fsal_handle_t * p_filehandle, /* IN */
+                                  fsal_op_context_t *p_context,        /* IN */
+                                  fsal_dynamicfsinfo_t * p_dynamicinfo  /* OUT */
+    )
 {
-  int rc;
-  struct statvfs st;
-  dmlitefsal_handle_t* handle = (dmlitefsal_handle_t*) exthandle;
-  dmlitefsal_op_context_t* context = (dmlitefsal_op_context_t*) extcontext;
+  struct statvfs buffstatvfs;
+  int rc, errsv;
 
   /* sanity checks. */
-  if(!handle || !dynamicinfo || !extcontext)
+  if(!p_filehandle || !p_dynamicinfo || !p_context)
     Return(ERR_FSAL_FAULT, 0, INDEX_FSAL_dynamic_fsinfo);
 
   TakeTokenFSCall();
-
-  // TODO: dmlite_stats
-
+  rc = fstatvfs(((vfsfsal_op_context_t *)p_context)->export_context->mount_root_fd,
+		&buffstatvfs);
+  errsv = errno;
   ReleaseTokenFSCall();
+  if(rc)
+    Return(posix2fsal_error(errsv), errsv, INDEX_FSAL_dynamic_fsinfo);
 
-  if (rc < 0)
-    Return(posix2fsal_error(rc), 0, INDEX_FSAL_dynamic_fsinfo);
+  p_dynamicinfo->total_bytes = buffstatvfs.f_frsize * buffstatvfs.f_blocks;
+  p_dynamicinfo->free_bytes = buffstatvfs.f_frsize * buffstatvfs.f_bfree;
+  p_dynamicinfo->avail_bytes = buffstatvfs.f_frsize * buffstatvfs.f_bavail;
 
-  memset(dynamicinfo, sizeof(fsal_dynamicfsinfo_t), 0);
-  dynamicinfo->total_bytes = st.f_frsize*st.f_blocks;
-  dynamicinfo->free_bytes = st.f_frsize*st.f_bfree;
-  dynamicinfo->avail_bytes = st.f_frsize*st.f_bavail;
-  dynamicinfo->total_files = st.f_files;
-  dynamicinfo->free_files = st.f_ffree;
-  dynamicinfo->avail_files = st.f_favail;
-  dynamicinfo->time_delta.seconds=1;
-  dynamicinfo->time_delta.nseconds=0;
+  p_dynamicinfo->total_files = buffstatvfs.f_files;
+  p_dynamicinfo->free_files = buffstatvfs.f_ffree;
+  p_dynamicinfo->avail_files = buffstatvfs.f_favail;
+
+  p_dynamicinfo->time_delta.seconds = 1;
+  p_dynamicinfo->time_delta.nseconds = 0;
 
   Return(ERR_FSAL_NO_ERROR, 0, INDEX_FSAL_dynamic_fsinfo);
+
 }

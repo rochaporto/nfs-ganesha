@@ -1,10 +1,7 @@
 /*
  * vim:expandtab:shiftwidth=8:tabstop=8:
  *
- * Copyright (C) 2010 The Linux Box, Inc.
- * Contributor : Adam C. Emerson <aemerson@linuxbox.com>
- *
- * Portions copyright CEA/DAM/DIF  (2008)
+ * Copyright CEA/DAM/DIF  (2008)
  * contributeur : Philippe DENIEL   philippe.deniel@cea.fr
  *                Thomas LEIBOVICI  thomas.leibovici@cea.fr
  *
@@ -23,12 +20,15 @@
  * License along with this library; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  *
- * -------------
+ * ------------- 
  */
 
 /**
  *
  * \file    fsal_truncate.c
+ * \author  $Author: leibovic $
+ * \date    $Date: 2005/07/29 09:39:05 $
+ * \version $Revision: 1.4 $
  * \brief   Truncate function.
  *
  */
@@ -40,6 +40,9 @@
 #include "fsal_internal.h"
 #include "fsal_convert.h"
 
+#include <unistd.h>
+#include <sys/types.h>
+
 /**
  * FSAL_truncate:
  * Modify the data length of a regular file.
@@ -50,7 +53,7 @@
  *        Authentication context for the operation (user,...).
  * \param length (input):
  *        The new data length for the file.
- * \param object_attributes (optionnal input/output):
+ * \param object_attributes (optionnal input/output): 
  *        The post operation attributes of the file.
  *        As input, it defines the attributes that the caller
  *        wants to retrieve (by positioning flags into this structure)
@@ -60,51 +63,70 @@
  *
  * \return Major error codes :
  *        - ERR_FSAL_NO_ERROR     (no error)
- *        - ERR_FSAL_STALE        (filehandle does not address an existing object)
- *        - ERR_FSAL_INVAL        (filehandle does not address a regular file)
- *        - ERR_FSAL_FAULT        (a NULL pointer was passed as mandatory argument)
- *        - Other error codes can be returned :
- *          ERR_FSAL_ACCESS, ERR_FSAL_IO, ...
+ *        - Another error code if an error occurred.
  */
 
-fsal_status_t CEPHFSAL_truncate(fsal_handle_t * exthandle,
-                                fsal_op_context_t * extcontext,
-                                fsal_size_t length,
-                                fsal_file_t * file_descriptor,
-                                fsal_attrib_list_t * object_attributes)
+fsal_status_t VFSFSAL_truncate(fsal_handle_t * p_filehandle,       /* IN */
+                            fsal_op_context_t * p_context,      /* IN */
+                            fsal_size_t length, /* IN */
+                            fsal_file_t * file_descriptor,      /* Unused in this FSAL */
+                            fsal_attrib_list_t * p_object_attributes    /* [ IN/OUT ] */
+    )
 {
-  int rc;
-  fsal_status_t status;
-  cephfsal_handle_t* handle = (cephfsal_handle_t*) exthandle;
-  cephfsal_op_context_t* context = (cephfsal_op_context_t*) extcontext;
-  int uid = FSAL_OP_CONTEXT_TO_UID(context);
-  int gid = FSAL_OP_CONTEXT_TO_GID(context);
+
+  int rc, errsv;
+  int fd;
+  fsal_status_t st;
 
   /* sanity checks.
    * note : object_attributes is optional.
    */
-  if(!handle || !context)
+  if(!p_filehandle || !p_context)
     Return(ERR_FSAL_FAULT, 0, INDEX_FSAL_truncate);
 
+  /* get the path of the file and its handle */
   TakeTokenFSCall();
-  rc = ceph_ll_truncate(context->export_context->cmount, VINODE(handle),
-                        length, uid, gid);
+  st = fsal_internal_handle2fd(p_context, p_filehandle, &fd, O_RDWR);
   ReleaseTokenFSCall();
 
-  if (rc < 0)
-    Return(posix2fsal_error(rc), 0, INDEX_FSAL_create);
+  if(FSAL_IS_ERROR(st))
+    ReturnStatus(st, INDEX_FSAL_truncate);
 
-  if(object_attributes)
+  /* Executes the POSIX truncate operation */
+
+  TakeTokenFSCall();
+  rc = ftruncate(fd, length);
+  errsv = errno;
+  ReleaseTokenFSCall();
+
+  close(fd);
+
+  /* convert return code */
+  if(rc)
     {
-      status = CEPHFSAL_getattrs(exthandle, extcontext, object_attributes);
-
-      if(FSAL_IS_ERROR(status))
-        {
-          FSAL_CLEAR_MASK(object_attributes->asked_attributes);
-          FSAL_SET_MASK(object_attributes->asked_attributes, FSAL_ATTR_RDATTR_ERR);
-        }
+      if(errsv == ENOENT)
+        Return(ERR_FSAL_STALE, errsv, INDEX_FSAL_truncate);
+      else
+        Return(posix2fsal_error(errsv), errsv, INDEX_FSAL_truncate);
     }
 
-  /* No error occured */
+  /* Optionally retrieve attributes */
+  if(p_object_attributes)
+    {
+
+      fsal_status_t st;
+
+      st = VFSFSAL_getattrs(p_filehandle, p_context, p_object_attributes);
+
+      if(FSAL_IS_ERROR(st))
+        {
+          FSAL_CLEAR_MASK(p_object_attributes->asked_attributes);
+          FSAL_SET_MASK(p_object_attributes->asked_attributes, FSAL_ATTR_RDATTR_ERR);
+        }
+
+    }
+
+  /* No error occurred */
   Return(ERR_FSAL_NO_ERROR, 0, INDEX_FSAL_truncate);
+
 }
