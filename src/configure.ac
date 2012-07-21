@@ -644,7 +644,7 @@ fi
 
 if test "$enable_fsal_dmlite" == "yes"; then
 	AC_DEFINE([_USE_DMLITE], 1, [GANESHA exports DMLITE Filesystem])
-	AC_CHECK_HEADERS([dmlite/dmlite.h], [], [AC_MSG_ERROR( missing dmlite include files)])
+	AC_CHECK_HEADERS([dmlite/c/dmlite.h], [], [AC_MSG_ERROR( missing dmlite include files)])
 	CFLAGS="${CFLAGS}"
 	FSAL_CFLAGS=""
 	LDFLAGS=""

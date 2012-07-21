@@ -12,29 +12,32 @@ BuildRoot:	%{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
 BuildRequires:	autoconf
 BuildRequires:	automake
 BuildRequires:	bison
+BuildRequires:	dmlite-devel
 BuildRequires:	flex
 BuildRequires:	gcc
+BuildRequires:	git
+BuildRequires:	krb5-devel
+BuildRequires:	libgssglue-devel
+BuildRequires:	libtool
 BuildRequires:	m4
+BuildRequires:	pkgconfig
 
 Requires:	libtirpc-libs
 
 %description
-NFS-GANESHA is a NFS Server running in user space with a large cache.
+Ganesha is a NFS Server running in user space with a large cache.
 It comes with various back-end modules to support different file systems and
 name-spaces.
 
 %package doc
-Summary: 	Documentation for NFS-GANESHA
+Summary: 	Documentation for Ganesha
 Group:		Applications/System
 
 %description doc
-NFS-GANESHA is a NFS Server running in user space with a large cache.
-It comes with various back-end modules to support different file systems and
-name-spaces. This package provides the documentation for NFS-GANESHA and its
-back-ends.
+This packages provides documentation on the ganesha server
 
 %package libntirpc
-Summary:	TI-RPC variant packaged with Ganesha.
+Summary:	TI-RPC variant packaged with Ganesha
 Group:		Applications/System
 
 %description libntirpc
@@ -42,24 +45,21 @@ A variant of TI-RPC with enhanced mt-safety, bi-directional operation, and
 other enhancements (in progress).
 
 %package libntirpc-devel
-Summary:	TI-RPC variant packaged with Ganesha.
+Summary:	Headers for the TI-RPC variant packaged with Ganesha
 Group:		Applications/System
 
 %description libntirpc-devel
-A variant of TI-RPC with enhanced mt-safety, bi-directional operation, and
-other enhancements (in progress).
+This package provides development files and headers for the variant of 
+TI-RPC for Ganesha.
 
 %package fsal-vfs
-Summary: 	The NFS-GANESHA server compiled for use with VFS
+Summary: 	Ganesha VFS filesystem plugin
 Group:		Applications/System
 Requires:	%{name}-common = %{version}-%{release} 
 Requires:	libattr
 
 %description fsal-vfs
-NFS-GANESHA is a NFS Server running in user space with a large cache.
-It comes with various back-end modules to support different file systems and
-name-spaces. This package provides support for NFS-GANESHA used on top of VFS.
-This feature requires a kernel higher than 2.6.39
+This package provides the VFS filesystem plugin for Ganesha.
 
 %package fsal-dmlite
 Summary: 	The NFS-GANESHA server compiled for use with DMLITE
@@ -78,9 +78,11 @@ This feature requires a kernel higher than 2.6.39
 %build
 cd src
 ./tirpc.sh
+aclocal
 autoreconf -f
 libtoolize
 %configure \
+	--disable-nfsidmap \
 	--disable-fsal-proxy \
 	--enable-fsal-dmlite \
 	--enable-fsal-vfs
@@ -95,9 +97,11 @@ mkdir -p %{buildroot}%{_sysconfdir}/init.d
 mkdir -p %{buildroot}%{_sysconfdir}/sysconfig
 mkdir -p %{buildroot}%{_sysconfdir}/logrotate.d
 mkdir -p %{buildroot}%{_bindir}
+mkdir -p %{buildroot}%{_datadir}
 mkdir -p %{buildroot}%{_initrddir}
 mkdir -p %{buildroot}%{_libdir}
 mkdir -p %{buildroot}%{_libdir}/pkgconfig
+mkdir -p %{buildroot}%{_sbindir}
 
 cd src
 make install DESTDIR=%{buildroot} sysconfdir=%{_sysconfdir}/%{name}
@@ -112,7 +116,7 @@ mv %{buildroot}%{_bindir}/ganestat.pl %{buildroot}%{_sbindir}
 
 # cleanup of unpackaged files
 rm %{buildroot}%{_libdir}/libfsal*.*a
-rm %{buildroot}%{_libdir}/libntirpc*.*a
+rm %{buildroot}%{_usr}/lib/libntirpc*.*a
 
 %clean
 rm -rf %{buildroot}
@@ -131,9 +135,8 @@ fi
 %postun libntirpc -p /sbin/ldconfig
 
 %files
-%defattr(0,root,root,-)
+%defattr(-,root,root,-)
 %dir %{_sysconfdir}/%{name}
-%dir %{_datadir}/%{name}
 %{_initrddir}/%{name}
 %{_sbindir}/%{name}.nfsd
 %{_sbindir}/ganestat.pl
@@ -145,13 +148,12 @@ fi
 
 %files doc
 %defattr(-,root,root,-)
-%doc LICENSE.txt Docs/nfs-ganesha-userguide.pdf Docs/nfs-ganesha-adminguide.pdf Docs/nfs-ganeshell-userguide.pdf Docs/nfs-ganesha-ganestat.pdf Docs/using_ganeshell.pdf Docs/nfs-ganesha-convert_fh.pdf Docs/using_*_fsal.pdf
-%doc Docs/ganesha_snmp_adm.pdf
+%doc src/LICENSE.txt src/Docs/nfs-ganesha-userguide.pdf src/Docs/nfs-ganesha-adminguide.pdf src/Docs/nfs-ganeshell-userguide.pdf src/Docs/nfs-ganesha-ganestat.pdf src/Docs/using_ganeshell.pdf src/Docs/nfs-ganesha-convert_fh.pdf src/Docs/using_*_fsal.pdf src/Docs/ganesha_snmp_adm.pdf
 
 %files libntirpc
 %defattr(-,root,root,-)
-%{_libdir}/libntirpc.so.*
-%{_libdir}/pkgconfig/libntirpc.pc
+%{_usr}/lib/libntirpc.so.*
+%{_usr}/lib/pkgconfig/libntirpc.pc
 
 %files libntirpc-devel
 %defattr(-,root,root,-)
@@ -207,21 +209,15 @@ fi
 %{_includedir}/tirpc/rpcsvc/crypt.x
 %{_includedir}/tirpc/un-namespace.h
 %{_includedir}/vc_lock.h
-%{_libdir}/libntirpc.so
+%{_usr}/lib/libntirpc.so
 
 %files fsal-vfs
 %defattr(-,root,root,-)
-%{_sysconfdir}/init.d/nfs-ganesha-vfs
-%{_sysconfdir}/sysconfig/ganesha
-%config(noreplace) %{_sysconfdir}/ganesha/vfs.ganesha*
+%{_sysconfdir}/%{name}/vfs.ganesha.*conf
 %{_libdir}/libfsalvfs.so*
 
 %files fsal-dmlite
 %defattr(-,root,root,-)
-%{_bindir}/dmlite.ganesha.*
-%{_sysconfdir}/init.d/nfs-ganesha-dmlite
-%{_sysconfdir}/sysconfig/ganesha
-%config(noreplace) %{_sysconfdir}/ganesha/dmlite.ganesha*
 %{_libdir}/libfsaldmlite.so*
 
 %changelog
