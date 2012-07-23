@@ -22,7 +22,7 @@ BuildRequires:	libtool
 BuildRequires:	m4
 BuildRequires:	pkgconfig
 
-Requires:	libtirpc-libs
+Requires:	libntirpc
 
 %description
 Ganesha is a NFS Server running in user space with a large cache.
@@ -36,26 +36,26 @@ Group:		Applications/System
 %description doc
 This packages provides documentation on the ganesha server
 
-%package libntirpc
+%package -n libntirpc
 Summary:	TI-RPC variant packaged with Ganesha
 Group:		Applications/System
 
-%description libntirpc
+%description -n libntirpc
 A variant of TI-RPC with enhanced mt-safety, bi-directional operation, and
 other enhancements (in progress).
 
-%package libntirpc-devel
+%package -n libntirpc-devel
 Summary:	Headers for the TI-RPC variant packaged with Ganesha
 Group:		Applications/System
 
-%description libntirpc-devel
+%description -n libntirpc-devel
 This package provides development files and headers for the variant of 
 TI-RPC for Ganesha.
 
 %package fsal-vfs
 Summary: 	Ganesha VFS filesystem plugin
 Group:		Applications/System
-Requires:	%{name}-common = %{version}-%{release} 
+Requires:	%{name} = %{version}-%{release} 
 Requires:	libattr
 
 %description fsal-vfs
@@ -64,7 +64,7 @@ This package provides the VFS filesystem plugin for Ganesha.
 %package fsal-dmlite
 Summary: 	The NFS-GANESHA server compiled for use with DMLITE
 Group:		Applications/System
-Requires:	%{name}-common = %{version}-%{release} 
+Requires:	%{name} = %{version}-%{release} 
 
 %description fsal-dmlite
 NFS-GANESHA is a NFS Server running in user space with a large cache.
@@ -131,9 +131,9 @@ fi
 %post
 /sbin/chkconfig --add %{name} > /dev/null 2>&1 || :
 
-%post libntirpc -p /sbin/ldconfig
+%post -n libntirpc -p /sbin/ldconfig
 
-%postun libntirpc -p /sbin/ldconfig
+%postun -n libntirpc -p /sbin/ldconfig
 
 %files
 %defattr(-,root,root,-)
@@ -151,12 +151,12 @@ fi
 %defattr(-,root,root,-)
 %doc src/LICENSE.txt src/Docs/nfs-ganesha-userguide.pdf src/Docs/nfs-ganesha-adminguide.pdf src/Docs/nfs-ganeshell-userguide.pdf src/Docs/nfs-ganesha-ganestat.pdf src/Docs/using_ganeshell.pdf src/Docs/nfs-ganesha-convert_fh.pdf src/Docs/using_*_fsal.pdf src/Docs/ganesha_snmp_adm.pdf
 
-%files libntirpc
+%files -n libntirpc
 %defattr(-,root,root,-)
 %{_usr}/lib/libntirpc.so.*
 %{_usr}/lib/pkgconfig/libntirpc.pc
 
-%files libntirpc-devel
+%files -n libntirpc-devel
 %defattr(-,root,root,-)
 %{_includedir}/m4/.dummy
 %{_includedir}/autogen.sh
