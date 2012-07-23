@@ -425,7 +425,7 @@ void Register_program(protos prot, int flag, int vers)
               tags[prot], (int)vers);
 
       /* XXXX fix svc_register! */
-      if(!UDP_REGISTER(prot, vers, netconfig_udpv4))
+/**      if(!UDP_REGISTER(prot, vers, netconfig_udpv4))
         LogFatal(COMPONENT_DISPATCH,
                  "Cannot register %s V%d on UDP",
                  tags[prot], (int)vers);
@@ -457,9 +457,9 @@ void Register_program(protos prot, int flag, int vers)
       if(!TCP_REGISTER(prot, vers, netconfig_tcpv6))
         LogFatal(COMPONENT_DISPATCH,
                  "Cannot register %s V%d on TCPv6",
-                 tags[prot], (int)vers);
-#endif /* _USE_TIRPC_IPV6 */
-#endif /* _NO_TCP_REGISTER */
+                 tags[prot], (int)vers);*/
+//#endif /* _USE_TIRPC_IPV6 */
+//#endif /* _NO_TCP_REGISTER */
     }
 }
 
