@@ -106,6 +106,7 @@ mkdir -p %{buildroot}%{_sbindir}
 cd src
 make install DESTDIR=%{buildroot} sysconfdir=%{_sysconfdir}/%{name}
 
+cd ..
 install -m 644 dist/ganesha.fedora.logrotate %{buildroot}%{_sysconfdir}/logrotate.d/%{name}
 install -m 755 dist/ganesha.fedora.init %{buildroot}%{_initrddir}/%{name}
 install -m 755 dist/ganesha.fedora.sysconfig %{buildroot}%{_sysconfdir}/sysconfig/%{name}
