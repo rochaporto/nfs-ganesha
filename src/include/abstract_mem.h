@@ -191,7 +191,7 @@ gsh_free_size(void *p, size_t n __attribute__((unused)))
  * and any functions wishing to use the static_pool could include it.
  */
 
-typedef struct pool pool_t;
+typedef struct pool2 pool_t;
 
 /**
  * @brief Abstract type of pool initializer
@@ -302,7 +302,7 @@ typedef void(*pool_destructor_t)(void *object);
  * should be made.
  */
 
-struct pool {
+struct pool2 {
      char *name; /*< The name of the pool */
      size_t object_size; /*< The size of the objects created */
      pool_constructor_t constructor; /*< The object constructor */
