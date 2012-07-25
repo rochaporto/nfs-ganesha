@@ -1,5 +1,6 @@
 /*
  *
+ * Copyright (C) CERN IT/GT/DMS <it-dep-gt-dms@cern.ch> 2012
  *
  * Copyright CEA/DAM/DIF  (2008)
  * contributeur : Philippe DENIEL   philippe.deniel@cea.fr
@@ -70,36 +71,36 @@
  * labels in the config file
  */
 
-#define CONF_LABEL_FS_SPECIFIC   "VFS"
+#define CONF_LABEL_FS_SPECIFIC   "DMLITE"
 
 
 /* -------------------------------------------
  *      POSIX FS dependant definitions
  * ------------------------------------------- */
 
-#define FSAL_VFS_HANDLE_LEN 29
-#define FSAL_VFS_FSHANDLE_LEN 64
+#define FSAL_DMLITE_HANDLE_LEN 29
+#define FSAL_DMLITE_FSHANDLE_LEN 64
 
 #include "fsal_handle_syscalls.h"
 #include "fsal_glue_const.h"
 
-#define fsal_handle_t vfsfsal_handle_t
-#define fsal_op_context_t vfsfsal_op_context_t
-#define fsal_file_t vfsfsal_file_t
-#define fsal_dir_t vfsfsal_dir_t
-#define fsal_export_context_t vfsfsal_export_context_t
-#define fsal_lockdesc_t vfsfsal_lockdesc_t
-#define fsal_cookie_t vfsfsal_cookie_t
-#define fs_specific_initinfo_t vfsfs_specific_initinfo_t
-#define fsal_cred_t vfsfsal_cred_t
+#define fsal_handle_t dmlitefsal_handle_t
+#define fsal_op_context_t dmlitefsal_op_context_t
+#define fsal_file_t dmlitefsal_file_t
+#define fsal_dir_t dmlitefsal_dir_t
+#define fsal_export_context_t dmlitefsal_export_context_t
+#define fsal_lockdesc_t dmlitefsal_lockdesc_t
+#define fsal_cookie_t dmlitefsal_cookie_t
+#define fs_specific_initinfo_t dmlitefs_specific_initinfo_t
+#define fsal_cred_t dmlitefsal_cred_t
 
 typedef union {
  struct
   {
-     vfs_file_handle_t vfs_handle ;
+     dmlite_file_handle_t dmlite_handle ;
   } data ;
   char pad[FSAL_HANDLE_T_SIZE];
-} vfsfsal_handle_t;  /**< FS object handle */
+} dmlitefsal_handle_t;  /**< FS object handle */
 
 /** Authentification context.    */
 
@@ -108,14 +109,14 @@ typedef struct
 {
   fsal_staticfsinfo_t * fe_static_fs_info;     /* Must be the first entry in this structure */
 
-  char              fstype[MAXNAMLEN] ;
-  int               mount_root_fd ;
-  vfs_file_handle_t root_handle ;
-} vfsfsal_export_context_t;
+  char          fstype[MAXNAMLEN] ;
+  dm_manager	manager ;
+  dmlite_file_handle_t root_handle ;
+} dmlitefsal_export_context_t;
 
 #define FSAL_EXPORT_CONTEXT_SPECIFIC( _pexport_context ) (uint64_t)((_pexport_context)->dev_id)
 
-//#define FSAL_GET_EXP_CTX( popctx ) (fsal_export_context_t *)(( (vfsfsal_op_context_t *)popctx)->export_context)
+//#define FSAL_GET_EXP_CTX( popctx ) (fsal_export_context_t *)(( (dmlitefsal_op_context_t *)popctx)->export_context)
 
 /** @TODO
  * Danger Will Robinson.
@@ -124,17 +125,17 @@ typedef struct
  */
 typedef struct
 {
-  vfsfsal_export_context_t *export_context;     /* Must be the first entry in this structure */
+  dmlitefsal_export_context_t *export_context;     /* Must be the first entry in this structure */
   struct user_credentials credential;
-} vfsfsal_op_context_t;
+} dmlitefsal_op_context_t;
 
 #define FSAL_OP_CONTEXT_TO_UID( pcontext ) ( pcontext->credential.user )
 #define FSAL_OP_CONTEXT_TO_GID( pcontext ) ( pcontext->credential.group )
 
 typedef struct
 {
-  char vfs_mount_point[MAXPATHLEN];
-} vfsfs_specific_initinfo_t;
+  char dmlite_mount_point[MAXPATHLEN];
+} dmlitefs_specific_initinfo_t;
 
 /**< directory cookie */
 typedef union {
@@ -143,41 +144,42 @@ typedef union {
   off_t cookie;
  } data ;
   char pad[FSAL_COOKIE_T_SIZE];
-} vfsfsal_cookie_t;
+o dmlitefsal_cookie_t;
+
 
 #define FSAL_SET_PCOOKIE_BY_OFFSET( __pfsal_cookie, __cookie )           \
 do                                                                       \
 {                                                                        \
-   ((vfsfsal_cookie_t *)__pfsal_cookie)->data.cookie = (off_t)__cookie ; \
+   ((dmltiefsal_cookie_t *)__pfsal_cookie)->data.cookie = (off_t)__cookie ; \
 } while( 0 )
 
 #define FSAL_SET_OFFSET_BY_PCOOKIE( __pfsal_cookie, __cookie )           \
 do                                                                       \
 {                                                                        \
-   __cookie =  ((vfsfsal_cookie_t *)__pfsal_cookie)->data.cookie ;       \
+   __cookie =  ((dmlitefsal_cookie_t *)__pfsal_cookie)->data.cookie ;       \
 } while( 0 )
 
 
-//static const vfsfsal_cookie_t FSAL_READDIR_FROM_BEGINNING = { 0 };
+//static const dmlitefsal_cookie_t FSAL_READDIR_FROM_BEGINNING = { 0 };
 
 /* Directory stream descriptor. */
 
 typedef struct
 {
   int fd;
-  vfsfsal_op_context_t context; /* credential for accessing the directory */
+  dmlitefsal_op_context_t context; /* credential for accessing the directory */
   fsal_path_t path;
   unsigned int dir_offset;
-  vfsfsal_handle_t handle;
-} vfsfsal_dir_t;
+  dmlitefsal_handle_t handle;
+} dmlitefsal_dir_t;
 
 typedef struct
 {
   int fd;
   int ro;                       /* read only file ? */
-} vfsfsal_file_t;
+} dmlitefsal_file_t;
 
-//#define FSAL_GET_EXP_CTX( popctx ) (fsal_export_context_t *)(( (vfsfsal_op_context_t *)popctx)->export_context)
-//#define FSAL_FILENO( p_fsal_file )  ((vfsfsal_file_t *)p_fsal_file)->fd 
+//#define FSAL_GET_EXP_CTX( popctx ) (fsal_export_context_t *)(( (dmlitefsal_op_context_t *)popctx)->export_context)
+//#define FSAL_FILENO( p_fsal_file )  ((dmlitefsal_file_t *)p_fsal_file)->fd 
 
 #endif                          /* _FSAL_TYPES__SPECIFIC_H */

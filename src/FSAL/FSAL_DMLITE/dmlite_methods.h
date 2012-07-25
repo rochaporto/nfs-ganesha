@@ -1,13 +1,12 @@
-/* VFS methods for handles
- */
+/* DMLITE private methods for handle */
 
-/* private helpers from export
- */
+/* DMLITE private methods for export */
 
 int dmlite_get_root_fd(struct fsal_export *exp_hdl);
 
-/* method proto linkage to handle.c for export
- */
+struct dm_manager * dmlite_get_manager(struct fsal_export *exp_hdl);
+
+/* Method proto linkage to handle.c for export */
 
 fsal_status_t dmlite_lookup_path(struct fsal_export *exp_hdl,
 			      const char *path,
@@ -17,19 +16,6 @@ fsal_status_t dmlite_create_handle(struct fsal_export *exp_hdl,
 				struct gsh_buffdesc *hdl_desc,
 				struct fsal_obj_handle **handle);
 
-/*
- * VFS internal object handle
- * handle is a pointer because
- *  a) the last element of file_handle is a char[] meaning variable len...
- *  b) we cannot depend on it *always* being last or being the only
- *     variable sized struct here...  a pointer is safer.
- * wrt locks, should this be a lock counter??
- * AF_UNIX sockets are strange ducks.  I personally cannot see why they
- * are here except for the ability of a client to see such an animal with
- * an 'ls' or get rid of one with an 'rm'.  You can't open them in the
- * usual file way so open_by_handle_at leads to a deadend.  To work around
- * this, we save the args that were used to mknod or lookup the socket.
- */
 
 struct dmlite_fsal_obj_handle {
 	struct fsal_obj_handle obj_handle;
@@ -52,7 +38,7 @@ struct dmlite_fsal_obj_handle {
 };
 
 
-	/* I/O management */
+/* I/O management */
 fsal_status_t dmlite_open(struct fsal_obj_handle *obj_hdl,
 		       fsal_openflags_t openflags);
 fsal_openflags_t dmlite_status(struct fsal_obj_handle *obj_hdl);

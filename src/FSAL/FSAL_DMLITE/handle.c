@@ -47,6 +47,8 @@
 #include "fsal_convert.h"
 #include "dmlite_methods.h"
 #include "FSAL/fsal_commonlib.h"
+#include "dmlite/c/dmlite.h"
+#include "dmlite/c/dm_catalog.h"
 
 /* helpers
  */
@@ -56,85 +58,66 @@
  * this uses malloc/free for the time being.
  */
 
+// TODO: DO NOT USE THIS ONE, to be removed
 static struct dmlite_fsal_obj_handle *alloc_handle(struct file_handle *fh,
-                                                struct stat *stat,
-                                                const char *link_content,
-                                                struct file_handle *dir_fh,
-                                                const char *sock_name,
-                                                struct fsal_export *exp_hdl)
+                                                   struct stat *stat,
+                                                   const char *link_content,
+                                                   struct file_handle *dir_fh,
+                                                   const char *sock_name,
+                                                   struct fsal_export *exp_hdl)
 {
-	struct dmlite_fsal_obj_handle *hdl;
-	fsal_status_t st;
+	struct dmlite_fsal_obj_handle dmlite_handle_obj;
+	fsal_status_t status;
 
-	hdl = malloc(sizeof(struct dmlite_fsal_obj_handle) +
-		     sizeof(struct file_handle) +
-		     fh->handle_bytes);
-	if(hdl == NULL)
-		return NULL;
-	memset(hdl, 0, (sizeof(struct dmlite_fsal_obj_handle) +
-			sizeof(struct file_handle) +
-			fh->handle_bytes));
-	hdl->handle = (struct file_handle *)&hdl[1];
-	memcpy(hdl->handle, fh,
-	       sizeof(struct file_handle) + fh->handle_bytes);
-	hdl->obj_handle.type = posix2fsal_type(stat->st_mode);
-	if(hdl->obj_handle.type == REGULAR_FILE) {
-		hdl->u.file.fd = -1;  /* no open on this yet */
-		hdl->u.file.openflags = FSAL_O_CLOSED;
-		hdl->u.file.lock_status = 0;
-	} else if(hdl->obj_handle.type == SYMBOLIC_LINK
-	   && link_content != NULL) {
-		size_t len = strlen(link_content) + 1;
+        return NULL;
+}
 
-		hdl->u.symlink.link_content = malloc(len);
-		if(hdl->u.symlink.link_content == NULL) {
-			goto spcerr;
-		}
-		memcpy(hdl->u.symlink.link_content, link_content, len);
-		hdl->u.symlink.link_size = len;
-	} else if(hdl->obj_handle.type == SOCKET_FILE
-		  && dir_fh != NULL
-		  && sock_name != NULL) {
-		hdl->u.sock.sock_dir = malloc(sizeof(struct file_handle)
-				       + dir_fh->handle_bytes);
-		if(hdl->u.sock.sock_dir == NULL)
-			goto spcerr;
-		memcpy(hdl->u.sock.sock_dir,
-		       dir_fh,
-		       sizeof(struct file_handle) + dir_fh->handle_bytes);
-		hdl->u.sock.sock_name = malloc(strlen(sock_name) + 1);
-		if(hdl->u.sock.sock_name == NULL)
-			goto spcerr;
-		strcpy(hdl->u.sock.sock_name, sock_name);
-	}
-	hdl->obj_handle.export = exp_hdl;
-	hdl->obj_handle.attributes.mask
+static struct dmlite_fsal_obj_handle *allocate_handle(struct stat *stat,
+                                                      struct fsal_export *exp_hdl)
+{
+	struct dmlite_fsal_obj_handle *dmlite_handle_obj;
+	fsal_status_t status;
+
+        dmlite_handle_obj = malloc(sizeof(struct dmlite_fsal_obj_handle));
+        if (dmlite_handle_obj == NULL)
+                return NULL;
+
+        /* Set basic object properties (mostly from stat) */
+	//memset(&dmlite_handle_obj, 0, (sizeof(struct dmlite_fsal_obj_handle)));
+	dmlite_handle_obj->obj_handle.type = posix2fsal_type(stat->st_mode);
+        dmlite_handle_obj->obj_handle.export = exp_hdl;
+	dmlite_handle_obj->obj_handle.attributes.mask
 		= exp_hdl->ops->fs_supported_attrs(exp_hdl);
-	hdl->obj_handle.attributes.supported_attributes
-                = hdl->obj_handle.attributes.mask;
-	st = posix2fsal_attributes(stat, &hdl->obj_handle.attributes);
-	if(FSAL_IS_ERROR(st))
-		goto spcerr;
-	if(!fsal_obj_handle_init(&hdl->obj_handle,
-				 exp_hdl->fsal->obj_ops,
-				 exp_hdl,
-	                         posix2fsal_type(stat->st_mode)))
-                return hdl;
+	dmlite_handle_obj->obj_handle.attributes.supported_attributes
+                = dmlite_handle_obj->obj_handle.attributes.mask;
+	status = posix2fsal_attributes(stat, &dmlite_handle_obj->obj_handle.attributes);
+	if(FSAL_IS_ERROR(status))
+		goto errout;
 
-	hdl->obj_handle.ops = NULL;
-	pthread_mutex_unlock(&hdl->obj_handle.lock);
-	pthread_mutex_destroy(&hdl->obj_handle.lock);
-spcerr:
-	if(hdl->obj_handle.type == SYMBOLIC_LINK) {
-		if(hdl->u.symlink.link_content != NULL)
-			free(hdl->u.symlink.link_content);
-	} else if(hdl->obj_handle.type == SOCKET_FILE) {
-		if(hdl->u.sock.sock_name != NULL)
-			free(hdl->u.sock.sock_name);
-		if(hdl->u.sock.sock_dir != NULL)
-			free(hdl->u.sock.sock_dir);
+        /* Initialize type specific elements (descriptors, flags, etc) for later */
+	if(dmlite_handle_obj->obj_handle.type == REGULAR_FILE) {
+		dmlite_handle_obj->u.file.fd = -1;  /* no open on this yet */
+		dmlite_handle_obj->u.file.openflags = FSAL_O_CLOSED;
+		dmlite_handle_obj->u.file.lock_status = 0;
 	}
-	free(hdl);  /* elvis has left the building */
+
+        /* Fill in the blanks... and call the generic handle initializer */
+        dmlite_handle_obj->obj_handle.export = exp_hdl;
+        dmlite_handle_obj->obj_handle.attributes.mask = exp_hdl->ops->fs_supported_attrs(exp_hdl);
+        dmlite_handle_obj->obj_handle.attributes.supported_attributes = 
+                dmlite_handle_obj->obj_handle.attributes.mask;
+	status = posix2fsal_attributes(stat, &dmlite_handle_obj->obj_handle.attributes);
+        if(FSAL_IS_ERROR(status))
+                goto errout;
+	if(!fsal_obj_handle_init(&dmlite_handle_obj->obj_handle, exp_hdl->fsal->obj_ops,
+				 exp_hdl, posix2fsal_type(stat->st_mode)))
+                return dmlite_handle_obj;
+
+        /* And we're done... cleanup */
+	dmlite_handle_obj->obj_handle.ops = NULL;
+	pthread_mutex_unlock(&dmlite_handle_obj->obj_handle.lock);
+	pthread_mutex_destroy(&dmlite_handle_obj->obj_handle.lock);
+errout:
 	return NULL;
 }
 
@@ -483,7 +466,7 @@ static fsal_status_t makenode(struct fsal_obj_handle *dir_hdl,
 	memset(fh, 0, sizeof(struct file_handle) + MAX_HANDLE_SZ);
 	fh->handle_bytes = MAX_HANDLE_SZ;
 	myself = container_of(dir_hdl, struct dmlite_fsal_obj_handle, obj_handle);
-	mount_fd = vfs_get_root_fd(dir_hdl->export);
+	mount_fd = dmlite_get_root_fd(dir_hdl->export);
 	user = attrib->owner;
 	group = attrib->group;
 	unix_mode = fsal2unix_mode(attrib->mode)
@@ -1353,11 +1336,11 @@ errout:
 static void handle_to_key(struct fsal_obj_handle *obj_hdl,
                           struct gsh_buffdesc *fh_desc)
 {
-	struct dmlite_fsal_obj_handle *myself;
+	struct dmlite_fsal_obj_handle *dmlite_handle_obj;
 
-	myself = container_of(obj_hdl, struct dmlite_fsal_obj_handle, obj_handle);
-	fh_desc->addr = myself->handle;
-	fh_desc->len = dmlite_sizeof_handle(myself->handle);
+	dmlite_handle_obj = container_of(obj_hdl, struct dmlite_fsal_obj_handle, obj_handle);
+	fh_desc->addr = dmlite_handle_obj;
+	fh_desc->len = sizeof(struct dmlite_fsal_obj_handle);
 }
 
 /*
@@ -1437,128 +1420,84 @@ void dmlite_handle_ops_init(struct fsal_obj_ops *ops)
 	ops->handle_to_key = handle_to_key;
 }
 
-/* export methods that create object handles
+/* 
+ * export methods that create object handles
  */
-
-/* lookup_path
- * modeled on old api except we don't stuff attributes.
- * KISS
- */
-
 fsal_status_t dmlite_lookup_path(struct fsal_export *exp_hdl,
-			      const char *path,
-			      struct fsal_obj_handle **handle)
+			         const char *path,
+			         struct fsal_obj_handle **handle)
 {
-	int dir_fd;
-	int mnt_id = 0;
-	struct stat stat;
-	struct dmlite_fsal_obj_handle *hdl;
-	char *basepart;
-	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
 	int retval = 0;
-	char *link_content = NULL;
-	ssize_t retlink;
-	struct file_handle *dir_fh = NULL;
-	char *sock_name = NULL;
-	struct file_handle *fh
-		= alloca(sizeof(struct file_handle) + MAX_HANDLE_SZ);
+	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
+        struct dm_manager *dmlite_manager_obj;
+        struct dm_context *dmlite_context_obj;
+        struct credentials dmlite_creds_obj;
+	struct dmlite_fsal_obj_handle *dmlite_handle_obj;
+	struct xstat dmlite_xstat_obj;
 
-	memset(fh, 0, sizeof(struct file_handle) + MAX_HANDLE_SZ);
-	fh->handle_bytes = MAX_HANDLE_SZ;
-	if(path == NULL
-	   || path[0] != '/'
-	   || strlen(path) > PATH_MAX
-	   || strlen(path) < 2) {
-		fsal_error = ERR_FSAL_INVAL;
-		goto errout;
-	}
-	basepart = rindex(path, '/');
-	if(basepart[1] == '\0') {
-		fsal_error = ERR_FSAL_INVAL;
-		goto errout;
-	}
-	if(basepart == path) {
-		dir_fd = open("/", O_RDONLY);
-	} else {
-		char *dirpart = alloca(basepart - path + 1);
+        LogFullDebug(COMPONENT_FSAL, "dmlite_lookup_path: start :: %s", path);
 
-		memcpy(dirpart, path, basepart - path);
-		dirpart[basepart - path] = '\0';
-		dir_fd = open(dirpart, O_RDONLY, 0600);
-	}
-	if(dir_fd < 0) {
-		retval = errno;
-		fsal_error = posix2fsal_error(retval);
-		goto errout;
-	}
-	retval = fstat(dir_fd, &stat);
-	if( !S_ISDIR(stat.st_mode)) {  /* this had better be a DIR! */
-		goto fileerr;
-	}
-	basepart++;
-	retval = name_to_handle_at(dir_fd, basepart, fh, &mnt_id, 0);
-	if(retval < 0) {
-		goto fileerr;
-	}
+        /* Get a dm_context object (need to get hold of a manager first) */
+        dmlite_manager_obj = dmlite_get_manager(exp_hdl);
+        if (dmlite_manager_obj == NULL) {
+                LogMajor(COMPONENT_FSAL, "dmlite_lookup_path: failed to get manager");
+                fsal_error = ERR_FSAL_FAULT;
+                goto errout;
+        }
+        dmlite_context_obj = dm_context_new(dmlite_manager_obj);
+        if (dmlite_context_obj == NULL) {
+                LogMajor(COMPONENT_FSAL, "dmlite_lookup_path: failed to create context");
+                fsal_error = ERR_FSAL_FAULT;
+                goto errout;
+        }
 
-	/* what about the file? Do no symlink chasing here. */
-	retval = fstatat(dir_fd, basepart, &stat, AT_SYMLINK_NOFOLLOW);
-	if(retval < 0) {
-		goto fileerr;
-	}
-	if(S_ISLNK(stat.st_mode)) {
-		char *link_content = malloc(PATH_MAX);
+        /* Set user credentials first :: TODO: actually use credentials */
+        dmlite_creds_obj.mech = "ID";
+        dmlite_creds_obj.client_name = "/C=CH/O=CERN/OU=GD/CN=Test user 1";
+        retval = dm_setcredentials(dmlite_context_obj, &dmlite_creds_obj);
+        if (retval != 0) {
+                LogMajor(COMPONENT_FSAL, "dmlite_lookup_path: failed to set credentials :: %s",
+                        dm_error(dmlite_context_obj));
+                fsal_error = ERR_FSAL_FAULT;
+                goto errout;
+        }
 
-		retlink = readlinkat(dir_fd, basepart,
-				     link_content, PATH_MAX);
-		if(retlink < 0 || retlink == PATH_MAX) {
-			retval = errno;
-			if(retlink == PATH_MAX)
-				retval = ENAMETOOLONG;
-			goto linkerr;
-		}
-		link_content[retlink] = '\0';
-	} else if(S_ISSOCK(stat.st_mode)) { /* AF_UNIX sockets require craziness */
-		dir_fh = malloc(sizeof(struct file_handle) + MAX_HANDLE_SZ);
-		memset(dir_fh, 0, sizeof(struct file_handle) + MAX_HANDLE_SZ);
-		dir_fh->handle_bytes = MAX_HANDLE_SZ;
-		retval = name_to_handle_at(dir_fd,
-					   "",
-					   dir_fh,
-					   &mnt_id,
-					   AT_EMPTY_PATH);
-		if(retval < 0) {
-			goto fileerr;
-		}
-		sock_name = basepart;
-	}
-	close(dir_fd);
+        /* Fetch the stat information for the request path */
+        memset(&dmlite_xstat_obj, 0, sizeof(struct xstat));
+        if(strcmp(path, "/") == 0) { // root file handle
+                retval = dm_xstat(dmlite_context_obj, "/", &dmlite_xstat_obj);
+        } else { // some other handle
+                retval = dm_xstat(dmlite_context_obj, path, &dmlite_xstat_obj);
+        }
+        if (retval != 0) {
+                retval = dm_errno(dmlite_context_obj);
+                LogMajor(COMPONENT_FSAL, "dmlite_lookup_path: failed to lookup %s :: %s", 
+                        path, dm_error(dmlite_context_obj));
+                fsal_error = ERR_FSAL_FAULT;
+                goto errout;
+        }
 
-	/* allocate an obj_handle and fill it up */
-	hdl = alloc_handle(fh, &stat, link_content, dir_fh, sock_name, exp_hdl);
-	if(link_content != NULL)
-		free(link_content);
-	if(dir_fh != NULL)
-		free(dir_fh);
-	if(hdl == NULL) {
+	/* Allocate a handle object and fill it up with the stat info */
+	dmlite_handle_obj = allocate_handle(&(dmlite_xstat_obj.stat), exp_hdl);
+	if(dmlite_handle_obj == NULL) {
 		fsal_error = ERR_FSAL_NOMEM;
+                LogMajor(COMPONENT_FSAL, "dmlite_lookup_path: failed to allocate handle");
 		*handle = NULL; /* poison it */
 		goto errout;
 	}
-	*handle = &hdl->obj_handle;
+
+        /* And return too... */
+        (*handle) = &(dmlite_handle_obj->obj_handle);
+
+        /* And we're done... do the final cleanup and return */
+        //if (dmlite_context_obj != NULL)
+        //        dm_context_free(dmlite_context_obj);
+
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 
-fileerr:
-	retval = errno;
-linkerr:
-	if(link_content != NULL)
-		free(link_content);
-	if(dir_fh != NULL)
-		free(dir_fh);
-	close(dir_fd);
-	fsal_error = posix2fsal_error(retval);
-
 errout:
+        if (dmlite_context_obj != NULL)
+                dm_context_free(dmlite_context_obj);
 	return fsalstat(fsal_error, retval);	
 }
 
@@ -1588,7 +1527,7 @@ fsal_status_t dmlite_create_handle(struct fsal_export *exp_hdl,
 	ssize_t retlink;
 	char link_buff[PATH_MAX];
 
-	
+        LogFullDebug(COMPONENT_FSAL, "dmlite_create_handle: start");
 
 	*handle = NULL; /* poison it first */
 	if((hdl_desc->len > (sizeof(struct file_handle) + MAX_HANDLE_SZ)) ||

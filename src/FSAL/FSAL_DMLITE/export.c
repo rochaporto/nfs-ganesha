@@ -49,27 +49,32 @@
 #include "FSAL/fsal_config.h"
 #include <FSAL/FSAL_DMLITE/fsal_handle_syscalls.h>
 
-/*
- * DMLITE internal export
- */
+#include <dmlite/c/dmlite.h>
+
+/* 
+  * DMLITE internal export (FSAL internal private fields).
+  *
+  * These are fields that other objects (like handle) will need.
+  */
 
 struct dmlite_fsal_export {
 	struct fsal_export export;
-	char *mntdir;
-	char *fs_spec;
-	char *fstype;
-	int root_fd;
-	dev_t root_dev;
+        struct dm_manager *manager;
 	struct file_handle *root_handle;
 };
 
-/* helpers to/from other DMLITE objects
- */
+/* Methods to be called from other DMLITE objects (like handle) */
 
 struct fsal_staticfsinfo_t *dmlite_staticinfo(struct fsal_module *hdl);
 
-/* export object methods
- */
+struct dm_manager * dmlite_get_manager(struct fsal_export *exp_hdl) {
+	struct dmlite_fsal_export *myself;
+
+	myself = container_of(exp_hdl, struct dmlite_fsal_export, export);
+	return myself->manager;
+}
+
+/* export object methods */
 
 static fsal_status_t release(struct fsal_export *exp_hdl)
 {
@@ -89,16 +94,8 @@ static fsal_status_t release(struct fsal_export *exp_hdl)
 		goto errout;
 	}
 	fsal_detach_export(exp_hdl->fsal, &exp_hdl->exports);
-	if(myself->root_fd >= 0)
-		close(myself->root_fd);
 	if(myself->root_handle != NULL)
 		free(myself->root_handle);
-	if(myself->fstype != NULL)
-		free(myself->fstype);
-	if(myself->mntdir != NULL)
-		free(myself->mntdir);
-	if(myself->fs_spec != NULL)
-		free(myself->fs_spec);
 	myself->export.ops = NULL; /* poison myself */
 	pthread_mutex_unlock(&exp_hdl->lock);
 
@@ -117,6 +114,8 @@ static fsal_status_t get_dynamic_info(struct fsal_export *exp_hdl,
 	struct dmlite_fsal_export *myself;
 	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
 	int retval = 0;
+
+        LogFullDebug(COMPONENT_FSAL, "get_dynamic_info: start");
 
 	if( !infop) {
 		fsal_error = ERR_FSAL_FAULT;
@@ -318,6 +317,8 @@ static fsal_status_t extract_handle(struct fsal_export *exp_hdl,
 	struct file_handle *hdl;
 	size_t fh_size;
 
+        LogFullDebug(COMPONENT_FSAL, "extract_handle: start");
+
 	/* sanity checks */
 	if( !fh_desc || !fh_desc->buf)
 		return fsalstat(ERR_FSAL_FAULT, 0);
@@ -383,16 +384,15 @@ fsal_status_t dmlite_create_export(struct fsal_module *fsal_hdl,
 				struct fsal_module *next_fsal,
 				struct fsal_export **export)
 {
-	struct dmlite_fsal_export *myself;
-	FILE *fp;
-	struct mntent *p_mnt;
-	size_t pathlen, outlen = 0;
-	char mntdir[MAXPATHLEN];  /* there has got to be a better way... */
-	char fs_spec[MAXPATHLEN];
-	char type[MAXNAMLEN];
 	int retval = 0;
 	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
+	struct dmlite_fsal_export *dmlite_export_obj;
+        struct dm_manager *dmlite_manager_obj;
 
+        LogFullDebug(COMPONENT_FSAL, "dmlite_create_export: start :: %s :: %s", 
+                export_path, fs_options);
+
+        /* Validation first */
 	*export = NULL; /* poison it first */
 	if(export_path == NULL
 	   || strlen(export_path) == 0
@@ -406,150 +406,60 @@ fsal_status_t dmlite_create_export(struct fsal_module *fsal_hdl,
 			"This module is not stackable");
 		return fsalstat(ERR_FSAL_INVAL, 0);
 	}
-
-	myself = malloc(sizeof(struct dmlite_fsal_export));
-	if(myself == NULL) {
+	dmlite_export_obj = malloc(sizeof(struct dmlite_fsal_export));
+	if(dmlite_export_obj == NULL) {
 		LogMajor(COMPONENT_FSAL,
 			 "dmlite_fsal_create: out of memory for object");
 		return fsalstat(posix2fsal_error(errno), errno);
 	}
-	memset(myself, 0, sizeof(struct dmlite_fsal_export));
-	myself->root_fd = -1;
+	memset(dmlite_export_obj, 0, sizeof(struct dmlite_fsal_export));
 
-        fsal_export_init(&myself->export, fsal_hdl->exp_ops, exp_entry);
+        /* Generic export initialization method (not our own) */
+        fsal_export_init(&dmlite_export_obj->export, fsal_hdl->exp_ops, exp_entry);
 
-	/* lock myself before attaching to the fsal.
-	 * keep myself locked until done with creating myself.
-	 */
 
-	pthread_mutex_lock(&myself->export.lock);
-	retval = fsal_attach_export(fsal_hdl, &myself->export.exports);
-	if(retval != 0)
+        /* Now we lock and get to business of creating the dmlite export */
+	pthread_mutex_lock(&dmlite_export_obj->export.lock);
+        // attach ourselfs to the list of exports (generic method)
+	retval = fsal_attach_export(fsal_hdl, &dmlite_export_obj->export.exports);
+	if(retval != 0) {
+                LogMajor(COMPONENT_FSAL, "dmlite_create_export: failed to attach FSAL");
+                fsal_error = ERR_FSAL_FAULT;
 		goto errout; /* seriously bad */
-	myself->export.fsal = fsal_hdl;
-
-	/* start looking for the mount point */
-	fp = setmntent(MOUNTED, "r");
-	if(fp == NULL) {
-		retval = errno;
-		LogCrit(COMPONENT_FSAL,
-			"Error %d in setmntent(%s): %s", retval, MOUNTED,
-			strerror(retval));
-		fsal_error = posix2fsal_error(retval);
-		goto errout;
-	}
-	while((p_mnt = getmntent(fp)) != NULL) {
-		if(p_mnt->mnt_dir != NULL) {
-			pathlen = strlen(p_mnt->mnt_dir);
-			if(pathlen > outlen) {
-				if(strcmp(p_mnt->mnt_dir, "/") == 0) {
-					outlen = pathlen;
-					strncpy(mntdir,
-						p_mnt->mnt_dir, MAXPATHLEN);
-					strncpy(type,
-						p_mnt->mnt_type, MAXNAMLEN);
-					strncpy(fs_spec,
-						p_mnt->mnt_fsname, MAXPATHLEN);
-				} else if((strncmp(export_path,
-						  p_mnt->mnt_dir,
-						  pathlen) == 0) &&
-					  ((export_path[pathlen] == '/') ||
-					   (export_path[pathlen] == '\0'))) {
-					if(strcasecmp(p_mnt->mnt_type, "xfs") == 0) {
-						LogDebug(COMPONENT_FSAL,
-							 "Mount (%s) is XFS, skipping",
-							 p_mnt->mnt_dir);
-						continue;
-					}
-					outlen = pathlen;
-					strncpy(mntdir,
-						p_mnt->mnt_dir, MAXPATHLEN);
-					strncpy(type,
-						p_mnt->mnt_type, MAXNAMLEN);
-					strncpy(fs_spec,
-						p_mnt->mnt_fsname, MAXPATHLEN);
-				}
-			}
-		}
-	}
-	endmntent(fp);
-	if(outlen <= 0) {
-		LogCrit(COMPONENT_FSAL,
-			"No mount entry matches '%s' in %s",
-			export_path, MOUNTED);
-		fsal_error = ERR_FSAL_NOENT;
-		goto errout;
         }
-	myself->root_fd = open(mntdir,  O_RDONLY|O_DIRECTORY);
-	if(myself->root_fd < 0) {
-		LogMajor(COMPONENT_FSAL,
-			 "Could not open VFS mount point %s: rc = %d",
-			 mntdir, errno);
-		fsal_error = posix2fsal_error(errno);
-		retval = errno;
-		goto errout;
-	} else {
-		struct stat root_stat;
-		int mnt_id = 0;
-		struct file_handle *fh = alloca(sizeof(struct file_handle)
-					       + MAX_HANDLE_SZ);
+	dmlite_export_obj->export.fsal = fsal_hdl;
 
-		memset(fh, 0, sizeof(struct file_handle) + MAX_HANDLE_SZ);
-		fh->handle_bytes = MAX_HANDLE_SZ;
-		retval = fstat(myself->root_fd, &root_stat);
-		if(retval < 0) {
-			LogMajor(COMPONENT_FSAL,
-				 "fstat: root_path: %s, fd=%d, errno=(%d) %s",
-				 mntdir, myself->root_fd, errno, strerror(errno));
-			fsal_error = posix2fsal_error(errno);
-			retval = errno;
-			goto errout;
-		}
-		myself->root_dev = root_stat.st_dev;
-		retval = name_to_handle_at(myself->root_fd, "", fh,
-					   &mnt_id, AT_EMPTY_PATH);
-		if(retval != 0) {
-			LogMajor(COMPONENT_FSAL,
-				 "name_to_handle: root_path: %s, root_fd=%d, errno=(%d) %s",
-				 mntdir, myself->root_fd, errno, strerror(errno));
-			fsal_error = posix2fsal_error(errno);
-			retval = errno;
-			goto errout;
-		}
-		myself->root_handle = malloc(sizeof(struct file_handle) + fh->handle_bytes);
-		if(myself->root_handle == NULL) {
-			LogMajor(COMPONENT_FSAL,
-				 "memory for root handle, errno=(%d) %s",
-				 errno, strerror(errno));
-			fsal_error = posix2fsal_error(errno);
-			retval = errno;
-			goto errout;
-		}
-		memcpy(myself->root_handle, fh, sizeof(struct file_handle) + fh->handle_bytes);
-	}
-	myself->fstype = strdup(type);
-	myself->fs_spec = strdup(fs_spec);
-	myself->mntdir = strdup(mntdir);
-	*export = &myself->export;
-	pthread_mutex_unlock(&myself->export.lock);
+	/* initialize the dmlite manager object and load configuration */
+        dmlite_manager_obj = dm_manager_new();
+        retval = dm_manager_load_configuration(dmlite_manager_obj, "/etc/dmlite.conf");
+        if (retval != 0) {
+                LogMajor(COMPONENT_FSAL, "dmlite_create_export: %s", 
+                        dm_manager_error(dmlite_manager_obj));
+                fsal_error = ERR_FSAL_FAULT;
+                goto errout;
+        }
+
+        /* store the manager in the export object (we'll need it in later calls) */
+        dmlite_export_obj->manager = dmlite_manager_obj;
+
+        /* and that's it... we can wrap up */
+	*export = &dmlite_export_obj->export;
+	pthread_mutex_unlock(&dmlite_export_obj->export.lock);
+
+        LogFullDebug(COMPONENT_FSAL, "dmlite_create_export: end");
+
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 
 errout:
-	if(myself->root_fd >= 0)
-		close(myself->root_fd);
-	if(myself->root_handle != NULL)
-		free(myself->root_handle);
-	if(myself->fstype != NULL)
-		free(myself->fstype);
-	if(myself->mntdir != NULL)
-		free(myself->mntdir);
-	if(myself->fs_spec != NULL)
-		free(myself->fs_spec);
-	myself->export.ops = NULL; /* poison myself */
-	pthread_mutex_unlock(&myself->export.lock);
-	pthread_mutex_destroy(&myself->export.lock);
-	free(myself);  /* elvis has left the building */
+	if(dmlite_export_obj->root_handle != NULL)
+		free(dmlite_export_obj->root_handle);
+	if(dmlite_export_obj->manager != NULL)
+		dm_manager_free(dmlite_export_obj->manager);
+	dmlite_export_obj->export.ops = NULL; /* poison myself */
+	pthread_mutex_unlock(&dmlite_export_obj->export.lock);
+	pthread_mutex_destroy(&dmlite_export_obj->export.lock);
+	free(dmlite_export_obj);  /* elvis has left the building */
+
 	return fsalstat(fsal_error, retval);
 }
-
 
