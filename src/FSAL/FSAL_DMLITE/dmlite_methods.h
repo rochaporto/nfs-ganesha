@@ -4,7 +4,9 @@
 
 int dmlite_get_root_fd(struct fsal_export *exp_hdl);
 
-struct dm_manager * dmlite_get_manager(struct fsal_export *exp_hdl);
+struct dmlite_manager * dmlite_get_manager(struct fsal_export *export_handle);
+
+struct dmlite_context * dmlite_get_context(struct fsal_export *export_handle);
 
 /* Method proto linkage to handle.c for export */
 
@@ -16,10 +18,14 @@ fsal_status_t dmlite_create_handle(struct fsal_export *exp_hdl,
 				struct gsh_buffdesc *hdl_desc,
 				struct fsal_obj_handle **handle);
 
-
 struct dmlite_fsal_obj_handle {
 	struct fsal_obj_handle obj_handle;
-	struct file_handle *handle;
+	struct file_handle *handle; // TODO: to be removed, not used
+	struct {
+		ino_t ino;
+		ino_t parent_ino;
+		char name[NAME_MAX];
+	} dmlite;
 	union {
 		struct {
 			int fd;

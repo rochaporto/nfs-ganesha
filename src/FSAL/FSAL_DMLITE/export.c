@@ -59,7 +59,7 @@
 
 struct dmlite_fsal_export {
 	struct fsal_export export;
-        struct dm_manager *manager;
+    struct dmlite_manager *manager;
 	struct file_handle *root_handle;
 };
 
@@ -67,11 +67,50 @@ struct dmlite_fsal_export {
 
 struct fsal_staticfsinfo_t *dmlite_staticinfo(struct fsal_module *hdl);
 
-struct dm_manager * dmlite_get_manager(struct fsal_export *exp_hdl) {
-	struct dmlite_fsal_export *myself;
+struct dmlite_manager * dmlite_get_manager(struct fsal_export *export_handle) {
+	struct dmlite_fsal_export *dmlite_export_priv_handle;
 
-	myself = container_of(exp_hdl, struct dmlite_fsal_export, export);
-	return myself->manager;
+	dmlite_export_priv_handle = container_of(export_handle, struct dmlite_fsal_export, export);
+	return dmlite_export_priv_handle->manager;
+}
+
+struct dmlite_context * dmlite_get_context(struct fsal_export *export_handle) {
+	
+	int retval = 0;
+	struct dmlite_manager *dmlite_manager_obj;
+	struct dmlite_context *dmlite_context_obj;
+	struct dmlite_credentials dmlite_creds_obj;
+	
+	/* Get a dmlite_manager object first */
+	dmlite_manager_obj = dmlite_get_manager(export_handle);
+	if (dmlite_manager_obj == NULL) {
+		LogMajor(COMPONENT_FSAL, "dmlite_get_context: manager was null... this should not happen");
+		goto errout;
+	}
+	dmlite_context_obj = dmlite_context_new(dmlite_manager_obj);
+	if (dmlite_context_obj == NULL) {
+		LogMajor(COMPONENT_FSAL, "dmlite_get_context: failed to create context :: %s",
+			dmlite_manager_error(dmlite_manager_obj));
+		goto errout;
+	}
+	
+	/* Set user credentials 
+	 * TODO: actually use credentials, and probably move this somewhere else */
+	dmlite_creds_obj.mech = "ID";
+	dmlite_creds_obj.client_name = "/C=CH/O=CERN/OU=GD/CN=Test user 1";
+	retval = dmlite_setcredentials(dmlite_context_obj, &dmlite_creds_obj);
+	if (retval != 0) {
+		LogMajor(COMPONENT_FSAL, "dmlite_get_context: failed to set credentials :: %s",
+					dmlite_error(dmlite_context_obj));
+		goto errout;
+	}
+		
+	return dmlite_context_obj;
+	
+errout:
+	if (dmlite_context_obj != NULL)
+		dmlite_context_free(dmlite_context_obj);
+	return NULL;
 }
 
 /* export object methods */
@@ -264,19 +303,12 @@ static fsal_status_t get_quota(struct fsal_export *exp_hdl,
 			       struct req_op_context *req_ctx,
 			       fsal_quota_t *pquota)
 {
-	struct dmlite_fsal_export *myself;
-	struct dqblk fs_quota;
-	struct stat path_stat;
-	uid_t id;
-	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
-	int retval;
 
-	myself = container_of(exp_hdl, struct dmlite_fsal_export, export);
-
-        // TODO: dmlite_stat for quota (can we do this?)
+	LogFullDebug(COMPONENT_FSAL, "get_quota: start");
 	
-out:
-	return fsalstat(fsal_error, retval);	
+	//TODO: can we implement this one?
+	
+	return fsalstat(ERR_FSAL_NO_ERROR, 0);	
 }
 
 /* set_quota
@@ -290,17 +322,11 @@ static fsal_status_t set_quota(struct fsal_export *exp_hdl,
 			       fsal_quota_t * pquota,
 			       fsal_quota_t * presquota)
 {
-	struct dmlite_fsal_export *myself;
-	uid_t id;
-	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
-	int retval;
-
-	myself = container_of(exp_hdl, struct dmlite_fsal_export, export);
-
-        // TODO: dmlite_setquota (can we do this?)
+	LogFullDebug(COMPONENT_FSAL, "set_quota: start");
 	
-err:
-	return fsalstat(fsal_error, retval);	
+	//TODO: can we implement this one?
+	
+	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 }
 
 /* extract a file handle from a buffer.
@@ -387,12 +413,12 @@ fsal_status_t dmlite_create_export(struct fsal_module *fsal_hdl,
 	int retval = 0;
 	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
 	struct dmlite_fsal_export *dmlite_export_obj;
-        struct dm_manager *dmlite_manager_obj;
+	struct dmlite_manager *dmlite_manager_obj;
 
-        LogFullDebug(COMPONENT_FSAL, "dmlite_create_export: start :: %s :: %s", 
-                export_path, fs_options);
+	LogFullDebug(COMPONENT_FSAL, "dmlite_create_export: start :: %s :: %s", 
+		export_path, fs_options);
 
-        /* Validation first */
+	/* Validation first */
 	*export = NULL; /* poison it first */
 	if(export_path == NULL
 	   || strlen(export_path) == 0
@@ -414,39 +440,38 @@ fsal_status_t dmlite_create_export(struct fsal_module *fsal_hdl,
 	}
 	memset(dmlite_export_obj, 0, sizeof(struct dmlite_fsal_export));
 
-        /* Generic export initialization method (not our own) */
-        fsal_export_init(&dmlite_export_obj->export, fsal_hdl->exp_ops, exp_entry);
+	/* Generic export initialization method (not our own) */
+	fsal_export_init(&dmlite_export_obj->export, fsal_hdl->exp_ops, exp_entry);
 
-
-        /* Now we lock and get to business of creating the dmlite export */
+	/* Now we lock and get to business of creating the dmlite export */
 	pthread_mutex_lock(&dmlite_export_obj->export.lock);
-        // attach ourselfs to the list of exports (generic method)
+	// attach ourselfs to the list of exports (generic method)
 	retval = fsal_attach_export(fsal_hdl, &dmlite_export_obj->export.exports);
 	if(retval != 0) {
-                LogMajor(COMPONENT_FSAL, "dmlite_create_export: failed to attach FSAL");
-                fsal_error = ERR_FSAL_FAULT;
+		LogMajor(COMPONENT_FSAL, "dmlite_create_export: failed to attach FSAL");
+		fsal_error = ERR_FSAL_FAULT;
 		goto errout; /* seriously bad */
-        }
+	}
 	dmlite_export_obj->export.fsal = fsal_hdl;
 
-	/* initialize the dmlite manager object and load configuration */
-        dmlite_manager_obj = dm_manager_new();
-        retval = dm_manager_load_configuration(dmlite_manager_obj, "/etc/dmlite.conf");
-        if (retval != 0) {
-                LogMajor(COMPONENT_FSAL, "dmlite_create_export: %s", 
-                        dm_manager_error(dmlite_manager_obj));
-                fsal_error = ERR_FSAL_FAULT;
-                goto errout;
-        }
+	/* Initialize the dmlite manager object and load configuration */
+	dmlite_manager_obj = dmlite_manager_new();
+	retval = dmlite_manager_load_configuration(dmlite_manager_obj, "/etc/dmlite.conf");
+	if (retval != 0) {
+		LogMajor(COMPONENT_FSAL, "dmlite_create_export: %s", 
+			dmlite_manager_error(dmlite_manager_obj));
+		fsal_error = ERR_FSAL_FAULT;
+		goto errout;
+	}
 
-        /* store the manager in the export object (we'll need it in later calls) */
-        dmlite_export_obj->manager = dmlite_manager_obj;
+	/* Store the manager in the export object (we'll need it in later calls) */
+	dmlite_export_obj->manager = dmlite_manager_obj;
 
-        /* and that's it... we can wrap up */
+	/* And that's it... we can wrap up */
 	*export = &dmlite_export_obj->export;
 	pthread_mutex_unlock(&dmlite_export_obj->export.lock);
 
-        LogFullDebug(COMPONENT_FSAL, "dmlite_create_export: end");
+	LogFullDebug(COMPONENT_FSAL, "dmlite_create_export: end");
 
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 
@@ -454,7 +479,7 @@ errout:
 	if(dmlite_export_obj->root_handle != NULL)
 		free(dmlite_export_obj->root_handle);
 	if(dmlite_export_obj->manager != NULL)
-		dm_manager_free(dmlite_export_obj->manager);
+		dmlite_manager_free(dmlite_export_obj->manager);
 	dmlite_export_obj->export.ops = NULL; /* poison myself */
 	pthread_mutex_unlock(&dmlite_export_obj->export.lock);
 	pthread_mutex_destroy(&dmlite_export_obj->export.lock);

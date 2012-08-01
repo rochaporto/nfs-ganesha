@@ -47,76 +47,62 @@
 #include "fsal_convert.h"
 #include "dmlite_methods.h"
 #include "FSAL/fsal_commonlib.h"
+#include "dmlite/c/catalog.h"
 #include "dmlite/c/dmlite.h"
-#include "dmlite/c/dm_catalog.h"
+#include "dmlite/c/inode.h"
 
 /* helpers
  */
 
-/* alloc_handle
- * allocate and fill in a handle
- * this uses malloc/free for the time being.
+/* allocate_handle
+ * 
+ * Allocate and fill in a handle.
  */
-
-// TODO: DO NOT USE THIS ONE, to be removed
-static struct dmlite_fsal_obj_handle *alloc_handle(struct file_handle *fh,
-                                                   struct stat *stat,
-                                                   const char *link_content,
-                                                   struct file_handle *dir_fh,
-                                                   const char *sock_name,
-                                                   struct fsal_export *exp_hdl)
-{
-	struct dmlite_fsal_obj_handle dmlite_handle_obj;
-	fsal_status_t status;
-
-        return NULL;
-}
-
-static struct dmlite_fsal_obj_handle *allocate_handle(struct stat *stat,
+static struct dmlite_fsal_obj_handle *allocate_handle(struct dmlite_xstat *dmlite_stat,
                                                       struct fsal_export *exp_hdl)
 {
-	struct dmlite_fsal_obj_handle *dmlite_handle_obj;
+	struct dmlite_fsal_obj_handle *dmlite_priv_obj;
 	fsal_status_t status;
 
-        dmlite_handle_obj = malloc(sizeof(struct dmlite_fsal_obj_handle));
-        if (dmlite_handle_obj == NULL)
-                return NULL;
+	LogFullDebug(COMPONENT_FSAL, "allocate_handle: start");
+	
+	dmlite_priv_obj = malloc(sizeof(struct dmlite_fsal_obj_handle));
+	
+	if (dmlite_priv_obj == NULL)
+		return NULL;
 
-        /* Set basic object properties (mostly from stat) */
-	//memset(&dmlite_handle_obj, 0, (sizeof(struct dmlite_fsal_obj_handle)));
-	dmlite_handle_obj->obj_handle.type = posix2fsal_type(stat->st_mode);
-        dmlite_handle_obj->obj_handle.export = exp_hdl;
-	dmlite_handle_obj->obj_handle.attributes.mask
+	/* Start with setting defaults for the internal properties */
+	if(dmlite_priv_obj->obj_handle.type == REGULAR_FILE) {
+		dmlite_priv_obj->u.file.fd = -1;  /* no open on this yet */
+		dmlite_priv_obj->u.file.openflags = FSAL_O_CLOSED;
+		dmlite_priv_obj->u.file.lock_status = 0;
+	}
+	
+	/* Then set the dmlite specific (also private) properties */
+	dmlite_priv_obj->dmlite.ino = dmlite_stat->stat.st_ino;
+	strncpy(dmlite_priv_obj->dmlite.name, dmlite_stat->name, NAME_MAX);
+
+	/* Finally set public pointer (obj_handle from fsal_api.h) properties */
+	//memset(&dmlite_priv_obj, 0, (sizeof(struct dmlite_fsal_obj_handle)));
+	dmlite_priv_obj->obj_handle.type = posix2fsal_type(dmlite_stat->stat.st_mode);
+	dmlite_priv_obj->obj_handle.export = exp_hdl;
+	dmlite_priv_obj->obj_handle.attributes.mask
 		= exp_hdl->ops->fs_supported_attrs(exp_hdl);
-	dmlite_handle_obj->obj_handle.attributes.supported_attributes
-                = dmlite_handle_obj->obj_handle.attributes.mask;
-	status = posix2fsal_attributes(stat, &dmlite_handle_obj->obj_handle.attributes);
+	dmlite_priv_obj->obj_handle.attributes.supported_attributes
+		= dmlite_priv_obj->obj_handle.attributes.mask;
+	status = posix2fsal_attributes(&dmlite_stat->stat, &dmlite_priv_obj->obj_handle.attributes);
 	if(FSAL_IS_ERROR(status))
 		goto errout;
+		
+	/* ... and initialize the public object handle */
+	if(!fsal_obj_handle_init(&dmlite_priv_obj->obj_handle, exp_hdl->fsal->obj_ops,
+		exp_hdl, posix2fsal_type(dmlite_stat->stat.st_mode)))
+		return dmlite_priv_obj;
 
-        /* Initialize type specific elements (descriptors, flags, etc) for later */
-	if(dmlite_handle_obj->obj_handle.type == REGULAR_FILE) {
-		dmlite_handle_obj->u.file.fd = -1;  /* no open on this yet */
-		dmlite_handle_obj->u.file.openflags = FSAL_O_CLOSED;
-		dmlite_handle_obj->u.file.lock_status = 0;
-	}
-
-        /* Fill in the blanks... and call the generic handle initializer */
-        dmlite_handle_obj->obj_handle.export = exp_hdl;
-        dmlite_handle_obj->obj_handle.attributes.mask = exp_hdl->ops->fs_supported_attrs(exp_hdl);
-        dmlite_handle_obj->obj_handle.attributes.supported_attributes = 
-                dmlite_handle_obj->obj_handle.attributes.mask;
-	status = posix2fsal_attributes(stat, &dmlite_handle_obj->obj_handle.attributes);
-        if(FSAL_IS_ERROR(status))
-                goto errout;
-	if(!fsal_obj_handle_init(&dmlite_handle_obj->obj_handle, exp_hdl->fsal->obj_ops,
-				 exp_hdl, posix2fsal_type(stat->st_mode)))
-                return dmlite_handle_obj;
-
-        /* And we're done... cleanup */
-	dmlite_handle_obj->obj_handle.ops = NULL;
-	pthread_mutex_unlock(&dmlite_handle_obj->obj_handle.lock);
-	pthread_mutex_destroy(&dmlite_handle_obj->obj_handle.lock);
+	/* And we're done... cleanup */
+	dmlite_priv_obj->obj_handle.ops = NULL;
+	pthread_mutex_unlock(&dmlite_priv_obj->obj_handle.lock);
+	pthread_mutex_destroy(&dmlite_priv_obj->obj_handle.lock);
 errout:
 	return NULL;
 }
@@ -129,309 +115,196 @@ errout:
  */
 
 static fsal_status_t lookup(struct fsal_obj_handle *parent,
-			    const char *path,
-			    struct fsal_obj_handle **handle)
+							const char *path,
+							struct fsal_obj_handle **handle)
 {
-	struct dmlite_fsal_obj_handle *parent_hdl, *hdl;
-	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
-	int retval, dirfd, fd;
-	int mount_fd;
-	int mnt_id = 0;
-	struct stat stat;
-	char *link_content = NULL;
-	struct file_handle *dir_hdl = NULL;
-	const char *sock_name = NULL;
-	ssize_t retlink;
-	char link_buff[1024];
-	struct file_handle *fh
-		= alloca(sizeof(struct file_handle) + MAX_HANDLE_SZ);
+	LogFullDebug(COMPONENT_FSAL, "lookup: start");
 
-	if( !path)
-		return fsalstat(ERR_FSAL_FAULT, 0);
-	memset(fh, 0, sizeof(struct file_handle) + MAX_HANDLE_SZ);
-	fh->handle_bytes = MAX_HANDLE_SZ;
-	mount_fd = dmlite_get_root_fd(parent->export);
-	parent_hdl = container_of(parent, struct dmlite_fsal_obj_handle, obj_handle);
-	if( !parent->ops->handle_is(parent, DIRECTORY)) {
-		LogCrit(COMPONENT_FSAL,
-			"Parent handle is not a directory. hdl = 0x%p",
-			parent);
-		return fsalstat(ERR_FSAL_NOTDIR, 0);
-	}
-	dirfd = open_by_handle_at(mount_fd, parent_hdl->handle, O_PATH|O_NOACCESS);
-	if(dirfd < 0) {
-		retval = errno;
-		fsal_error = posix2fsal_error(retval);
-		goto errout;
-	}
-	retval = name_to_handle_at(dirfd, path, fh, &mnt_id, 0);
-	if(retval < 0) {
-		retval = errno;
-		fsal_error = posix2fsal_error(retval);
-		close(dirfd);
-		goto errout;
-	}
-	close(dirfd);
-	fd = open_by_handle_at(mount_fd, fh, O_PATH|O_NOACCESS);
-	if(fd < 0) {
-		retval = errno;
-		fsal_error = posix2fsal_error(retval);
-		goto errout;
-	}
-	retval = fstatat(fd, "", &stat, AT_EMPTY_PATH);
-	if(retval < 0) {
-		retval = errno;
-		fsal_error = posix2fsal_error(retval);
-		close(fd);
-		goto errout;
-	}
-	if(S_ISLNK(stat.st_mode)) { /* I could lazy eval this... */
-		retlink = readlinkat(fd, "", link_buff, 1024);
-		if(retlink < 0 || retlink == 1024) {
-			retval = errno;
-			if(retlink == 1024)
-				retval = ENAMETOOLONG;
-			fsal_error = posix2fsal_error(retval);
-			close(fd);
-			goto errout;
-		}
-		link_buff[retlink] = '\0';
-		link_content = &link_buff[0];
-	} else if(S_ISSOCK(stat.st_mode)) {
-		dir_hdl = parent_hdl->handle;
-		sock_name = path;
-	}
-	close(fd);
-	/* allocate an obj_handle and fill it up */
-	hdl = alloc_handle(fh, &stat,
-			   link_content,
-			   dir_hdl,
-			   sock_name,
-			   parent->export);
-	if(hdl != NULL) {
-		*handle = &hdl->obj_handle;
-	} else {
-		fsal_error = ERR_FSAL_NOMEM;
-		*handle = NULL; /* poison it */
-		goto errout;
-	}
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
-	
-errout:
-	return fsalstat(fsal_error, retval);	
 }
 
 /* create
- * create a regular file and set its attributes
+ * 
+ * Creates a regular file and sets its attributes.
  */
-
-static fsal_status_t create(struct fsal_obj_handle *dir_hdl,
-                            const char *name,
-                            struct attrlist *attrib,
-                            struct fsal_obj_handle **handle)
+static fsal_status_t create(struct fsal_obj_handle *dir_handle,
+                            const char *file_name,
+                            struct attrlist *file_attrs,
+                            struct fsal_obj_handle **file_out_public_handle)
 {
-	struct dmlite_fsal_obj_handle *myself, *hdl;
-	int mnt_id = 0;
-	int fd, mount_fd, dir_fd;
-	struct stat stat;
-	mode_t unix_mode;
-	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
 	int retval = 0;
-	uid_t user;
-	gid_t group;
-	struct file_handle *fh
-		= alloca(sizeof(struct file_handle) + MAX_HANDLE_SZ);
-
-	*handle = NULL; /* poison it */
-	if( !dir_hdl->ops->handle_is(dir_hdl, DIRECTORY)) {
-		LogCrit(COMPONENT_FSAL,
-			"Parent handle is not a directory. hdl = 0x%p",
-			dir_hdl);
-		return fsalstat(ERR_FSAL_NOTDIR, 0);
-	}
-	memset(fh, 0, sizeof(struct file_handle) + MAX_HANDLE_SZ);
-	fh->handle_bytes = MAX_HANDLE_SZ;
-	myself = container_of(dir_hdl, struct dmlite_fsal_obj_handle, obj_handle);
-	mount_fd = dmlite_get_root_fd(dir_hdl->export);
-	user = attrib->owner;
-	group = attrib->group;
-	unix_mode = fsal2unix_mode(attrib->mode)
-		& ~dir_hdl->export->ops->fs_umask(dir_hdl->export);
-	dir_fd = open_by_handle_at(mount_fd, myself->handle, O_PATH|O_NOACCESS);
-	if(dir_fd < 0) {
-		retval = errno;
-		if(retval == ENOENT)
-			fsal_error = ERR_FSAL_STALE;
-		else
-			fsal_error = posix2fsal_error(retval);
-		goto errout;
-	}
-	retval = fstatat(dir_fd, "", &stat, AT_EMPTY_PATH);
-	if(retval < 0) {
-		retval = errno;
-		fsal_error = posix2fsal_error(retval);
-		close(dir_fd);
-		goto errout;
-	}
-	if(stat.st_mode & S_ISGID)
-		group = -1; /*setgid bit on dir propagates dir group owner */
-
-	/* create it with no access because we are root when we do this */
-	fd = openat(dir_fd, name, O_CREAT|O_WRONLY|O_TRUNC|O_EXCL, 0000);
-	if(fd < 0) {
-		retval = errno;
-		fsal_error = posix2fsal_error(retval);
-		close(dir_fd);
-		goto errout;
-	}
-	close(dir_fd); /* done with parent */
-
-	retval = fchown(fd, user, group);
-	if(retval < 0) {
-		goto fileerr;
-	}
-
-	/* now that it is owned properly, set to an accessible mode */
-	retval = fchmod(fd, unix_mode);
-	if(retval < 0) {
-		goto fileerr;
-	}
-	retval = name_to_handle_at(fd, "", fh, &mnt_id, AT_EMPTY_PATH);
-	if(retval < 0) {
-		goto fileerr;
-	}
-	retval = fstatat(fd, "", &stat, AT_EMPTY_PATH);
-	if(retval < 0) {
-		goto fileerr;
-	}
-	close(fd);
-
-	/* allocate an obj_handle and fill it up */
-	hdl = alloc_handle(fh, &stat, NULL, NULL, NULL, dir_hdl->export);
-	if(hdl != NULL) {
-		*handle = &hdl->obj_handle;
-	} else {
-		fsal_error = ERR_FSAL_NOMEM;
-		goto errout;
-	}
-	return fsalstat(ERR_FSAL_NO_ERROR, 0);
-
-fileerr:
-	retval = errno;
-	fsal_error = posix2fsal_error(retval);
-	close(fd);
-errout:
-	return fsalstat(fsal_error, retval);	
-}
-
-static fsal_status_t makedir(struct fsal_obj_handle *dir_hdl,
-			     const char *name,
-			     struct attrlist *attrib,
-			     struct fsal_obj_handle **handle)
-{
-	struct dmlite_fsal_obj_handle *myself, *hdl;
-	int mnt_id = 0;
-	int fd, mount_fd, dir_fd;
-	struct stat stat;
-	mode_t unix_mode;
 	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
-	int retval = 0;
-	uid_t user;
-	gid_t group;
-	struct file_handle *fh
-		= alloca(sizeof(struct file_handle) + MAX_HANDLE_SZ);
-
-	*handle = NULL; /* poison it */
-	if( !dir_hdl->ops->handle_is(dir_hdl, DIRECTORY)) {
-		LogCrit(COMPONENT_FSAL,
-			"Parent handle is not a directory. hdl = 0x%p",
-			dir_hdl);
-		return fsalstat(ERR_FSAL_NOTDIR, 0);
-	}
-	memset(fh, 0, sizeof(struct file_handle) + MAX_HANDLE_SZ);
-	fh->handle_bytes = MAX_HANDLE_SZ;
-	myself = container_of(dir_hdl, struct dmlite_fsal_obj_handle, obj_handle);
-	mount_fd = dmlite_get_root_fd(dir_hdl->export);
-	user = attrib->owner;
-	group = attrib->group;
-	unix_mode = fsal2unix_mode(attrib->mode)
-		& ~dir_hdl->export->ops->fs_umask(dir_hdl->export);
-	dir_fd = open_by_handle_at(mount_fd, myself->handle, O_PATH|O_NOACCESS);
-	if(dir_fd < 0) {
-		retval = errno;
-		if(retval == ENOENT)
-			fsal_error = ERR_FSAL_STALE;
-		else
-			fsal_error = posix2fsal_error(retval);
-		goto errout;
-	}
-	retval = fstatat(dir_fd, "", &stat, AT_EMPTY_PATH);
-	if(retval < 0) {
-		goto direrr;
-	}
-	if(stat.st_mode & S_ISGID)
-		group = -1; /*setgid bit on dir propagates dir group owner */
-
-	/* create it with no access because we are root when we do this */
-	retval = mkdirat(dir_fd, name, 0000);
-	if(retval < 0) {
-		goto direrr;
-	}
-	fd = openat(dir_fd, name, O_RDONLY | O_DIRECTORY);
-/** @TODO. my fd leak caused this to fail, leaving the dir around.
- * do an unlinkat on failed dirs.  same for other f/s object is we don't
- * get through the full dance to a real and safe object
- */
-	if(fd < 0) {
-		goto direrr;
-	}
-	close(dir_fd); /* done with the parent */
-
-	retval = fchown(fd, user, group);
-	if(retval < 0) {
-		goto fileerr;
-	}
-
-	/* now that it is owned properly, set accessible mode */
-	retval = fchmod(fd, unix_mode);
-	if(retval < 0) {
-		goto fileerr;
-	}
-	retval = name_to_handle_at(fd, "", fh, &mnt_id, AT_EMPTY_PATH);
-	if(retval < 0) {
-		goto fileerr;
-	}
-	retval = fstatat(fd, "", &stat, AT_EMPTY_PATH);
-	if(retval < 0) {
-		goto fileerr;
-	}
-	close(fd);
-
-	/* allocate an obj_handle and fill it up */
-	hdl = alloc_handle(fh, &stat, NULL, NULL, NULL, dir_hdl->export);
-	if(hdl != NULL) {
-		*handle = &hdl->obj_handle;
-	} else {
-		fsal_error = ERR_FSAL_NOMEM;
-		goto errout;
-	}
-	return fsalstat(ERR_FSAL_NO_ERROR, 0);
+	struct dmlite_context *dmlite_context_obj;
+	struct dmlite_fsal_obj_handle *dmlite_dir_priv_handle;
+	struct dmlite_fsal_obj_handle *dmlite_file_priv_handle;
+	struct dmlite_xstat dmlite_xstat_obj;
 	
-direrr:
-	retval = errno;
-	fsal_error = posix2fsal_error(retval);
-	close(dir_fd);
+	LogFullDebug(COMPONENT_FSAL, "create: start");
 
-	return fsalstat(fsal_error, retval);	
+	/* Make sure we clean it up first */
+	*file_out_public_handle = NULL;
+	
+	/* Is the directory really a directory? */
+	if( !dir_handle->ops->handle_is(dir_handle, DIRECTORY)) {
+		LogCrit(COMPONENT_FSAL,
+			"Given parent handle is not a directory. hdl = 0x%p", dir_handle);
+		return fsalstat(ERR_FSAL_NOTDIR, 0);
+	}
+	
+	/* Fetch the private handler for the given directory (from the public obj_handle) */
+	dmlite_dir_priv_handle = container_of(dir_handle, struct dmlite_fsal_obj_handle, obj_handle);
+	
+	/* Get a dmlite_context object */
+	dmlite_context_obj = dmlite_get_context(dir_handle->export);
+	if (dmlite_context_obj == NULL) {
+		LogMajor(COMPONENT_FSAL, "create: failed to create context");
+		fsal_error = ERR_FSAL_FAULT;
+		goto errout;
+	}
+	
+	/* Go ahead and create the catalog entry (using a xstat object) */
+	dmlite_xstat_obj.parent = dmlite_dir_priv_handle->dmlite.ino;
+	dmlite_xstat_obj.stat.st_mode = file_attrs->mode;
+	dmlite_xstat_obj.stat.st_uid = file_attrs->owner;
+	dmlite_xstat_obj.stat.st_gid = file_attrs->group;
+	strncpy(dmlite_xstat_obj.name, file_name, NAME_MAX); 
+	retval = dmlite_icreate(dmlite_context_obj, &dmlite_xstat_obj);
+	if (retval != 0) {
+		LogMajor(COMPONENT_FSAL, "create: failed to create new catalog entry :: %s",
+					dmlite_error(dmlite_context_obj));
+		fsal_error = ERR_FSAL_FAULT;
+		goto errout;
+	}
+		
+	/* Fetch the file info back so that we can fill the handle obj */
+	memset(&dmlite_xstat_obj, 0, sizeof(struct dmlite_xstat));
+	retval = dmlite_statx(dmlite_context_obj, file_name, &dmlite_xstat_obj);
+	if (retval != 0) {
+		retval = dmlite_errno(dmlite_context_obj);
+		LogMajor(COMPONENT_FSAL, "create: failed to stat new file :: %s", 
+					dmlite_error(dmlite_context_obj));
+		fsal_error = ERR_FSAL_FAULT;
+		goto errout;
+	}
 
-fileerr:
-	retval = errno;
-	fsal_error = posix2fsal_error(retval);
-	close(fd);
+	/* Allocate a handle object and fill it up with the stat info */
+	dmlite_file_priv_handle = allocate_handle(&dmlite_xstat_obj, dir_handle->export);
+	if(dmlite_file_priv_handle == NULL) {
+		fsal_error = ERR_FSAL_NOMEM;
+		LogMajor(COMPONENT_FSAL, "create: failed to allocate handle");
+		*file_out_public_handle = NULL;
+		goto errout;
+	}
+		
+	/* And return too... */
+	(*file_out_public_handle) = &(dmlite_file_priv_handle->obj_handle);
+
+	/* And we're done... do the final cleanup and return */
+	if (dmlite_context_obj != NULL)
+		dmlite_context_free(dmlite_context_obj);
+
+	return fsalstat(ERR_FSAL_NO_ERROR, 0);
+
 errout:
+	if (dmlite_context_obj != NULL)
+		dmlite_context_free(dmlite_context_obj);
 	return fsalstat(fsal_error, retval);	
 }
 
+/* mkdir
+ * 
+ * Creates a new directory.
+ */
+static fsal_status_t makedir(struct fsal_obj_handle *parent_public_handle,
+							 const char *dir_name,
+							 struct attrlist *dir_attrs,
+							 struct fsal_obj_handle **dir_out_public_handle)
+{
+	int retval = 0;
+	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
+	struct dmlite_context *dmlite_context_obj;
+	struct dmlite_fsal_obj_handle *dmlite_parent_priv_handle;
+	struct dmlite_fsal_obj_handle *dmlite_dir_priv_handle;
+	struct dmlite_xstat dmlite_xstat_obj;
+	
+	LogFullDebug(COMPONENT_FSAL, "makedir: start");
+
+	/* Make sure we clean it up first */
+	*dir_out_public_handle = NULL;
+	
+	/* Is the directory really a directory? */
+	if( !parent_public_handle->ops->handle_is(parent_public_handle, DIRECTORY)) {
+		LogCrit(COMPONENT_FSAL,
+			"makedir: given parent handle is not a directory. hdl = 0x%p", parent_public_handle);
+		return fsalstat(ERR_FSAL_NOTDIR, 0);
+	}
+	
+	/* Fetch the private handler for the given parent (from the public obj_handle) */
+	dmlite_parent_priv_handle = container_of(parent_public_handle, 
+		struct dmlite_fsal_obj_handle, obj_handle);
+	
+	/* Get a dmlite_context object */
+	dmlite_context_obj = dmlite_get_context(parent_public_handle->export);
+	if (dmlite_context_obj == NULL) {
+		LogMajor(COMPONENT_FSAL, "makedir: failed to create context");
+		fsal_error = ERR_FSAL_FAULT;
+		goto errout;
+	}
+	
+	/* Go ahead and create the catalog entry */
+	dmlite_xstat_obj.parent = dmlite_parent_priv_handle->dmlite.ino;
+	dmlite_xstat_obj.stat.st_mode = dir_attrs->mode;
+	dmlite_xstat_obj.stat.st_uid = dir_attrs->owner;
+	dmlite_xstat_obj.stat.st_gid = dir_attrs->group;
+	strncpy(dmlite_xstat_obj.name, dir_name, NAME_MAX); 
+	retval = dmlite_icreate(dmlite_context_obj, &dmlite_xstat_obj);
+	if (retval != 0) {
+		LogMajor(COMPONENT_FSAL, "makedir: failed to create new directory entry :: %s",
+					dmlite_error(dmlite_context_obj));
+		fsal_error = ERR_FSAL_FAULT;
+		goto errout;
+	}
+	
+	/* Fetch the directory info back so that we can fill the handle obj */
+	memset(&dmlite_xstat_obj, 0, sizeof(struct dmlite_xstat));
+	retval = dmlite_istatx_by_name(dmlite_context_obj, 
+		dmlite_parent_priv_handle->dmlite.ino, dir_name, &dmlite_xstat_obj);
+	if (retval != 0) {
+		retval = dmlite_errno(dmlite_context_obj);
+		LogMajor(COMPONENT_FSAL, "create: failed to stat new directory :: %s", 
+					dmlite_error(dmlite_context_obj));
+		fsal_error = ERR_FSAL_FAULT;
+		goto errout;
+	}
+
+	/* Allocate a handle object and fill it up with the stat info */
+	dmlite_dir_priv_handle = allocate_handle(&dmlite_xstat_obj, parent_public_handle->export);
+	if(dmlite_dir_priv_handle == NULL) {
+		fsal_error = ERR_FSAL_NOMEM;
+		LogMajor(COMPONENT_FSAL, "create: failed to allocate handle");
+		*dir_out_public_handle = NULL;
+		goto errout;
+	}
+		
+	/* And return too... */
+	(*dir_out_public_handle) = &(dmlite_dir_priv_handle->obj_handle);
+
+	/* And we're done... do the final cleanup and return */
+	if (dmlite_context_obj != NULL)
+		dmlite_context_free(dmlite_context_obj);
+
+	return fsalstat(ERR_FSAL_NO_ERROR, 0);
+
+errout:
+	if (dmlite_context_obj != NULL)
+		dmlite_context_free(dmlite_context_obj);
+	return fsalstat(fsal_error, retval);	
+	
+}
+
+/**
+ * We do not support this one...
+ */
 static fsal_status_t makenode(struct fsal_obj_handle *dir_hdl,
                               const char *name,
                               object_file_type_t nodetype,  /* IN */
@@ -439,351 +312,186 @@ static fsal_status_t makenode(struct fsal_obj_handle *dir_hdl,
                               struct attrlist *attrib,
                               struct fsal_obj_handle **handle)
 {
-	struct dmlite_fsal_obj_handle *myself, *hdl;
-	int mnt_id = 0;
-	int mount_fd, dir_fd = -1;
-	struct stat stat;
-	mode_t unix_mode, create_mode = 0;
-	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
-	int retval = 0;
-	uid_t user;
-	gid_t group;
-	dev_t unix_dev = 0;
-	struct file_handle *dir_fh = NULL;
-	const char *sock_name = NULL;
-	struct file_handle *fh
-		= alloca(sizeof(struct file_handle) + MAX_HANDLE_SZ);
+	LogFullDebug(COMPONENT_FSAL, "makenode: not supported... should not be called!");
 
-	*handle = NULL; /* poison it */
-	if( !dir_hdl->ops->handle_is(dir_hdl, DIRECTORY)) {
-		LogCrit(COMPONENT_FSAL,
-			"Parent handle is not a directory. hdl = 0x%p",
-			dir_hdl);
-
-
-		return fsalstat(ERR_FSAL_NOTDIR, 0);
-	}
-	memset(fh, 0, sizeof(struct file_handle) + MAX_HANDLE_SZ);
-	fh->handle_bytes = MAX_HANDLE_SZ;
-	myself = container_of(dir_hdl, struct dmlite_fsal_obj_handle, obj_handle);
-	mount_fd = dmlite_get_root_fd(dir_hdl->export);
-	user = attrib->owner;
-	group = attrib->group;
-	unix_mode = fsal2unix_mode(attrib->mode)
-		& ~dir_hdl->export->ops->fs_umask(dir_hdl->export);
-	switch (nodetype) {
-	case BLOCK_FILE:
-		if( !dev) {
-			fsal_error = ERR_FSAL_FAULT;
-			goto errout;
-		}
-		create_mode = S_IFBLK;
-		unix_dev = makedev(dev->major, dev->minor);
-		break;
-	case CHARACTER_FILE:
-		if( !dev) {
- 			fsal_error = ERR_FSAL_FAULT;
-			goto errout;
-
-
-		}
-		create_mode = S_IFCHR;
-		unix_dev = makedev(dev->major, dev->minor);
-		break;
-	case FIFO_FILE:
-		create_mode = S_IFIFO;
-		break;
-	case SOCKET_FILE:
-		create_mode = S_IFSOCK;
-		dir_fh = myself->handle;
-                sock_name = name;
-		break;
-	default:
-		LogMajor(COMPONENT_FSAL,
-			 "Invalid node type in FSAL_mknode: %d",
-			 nodetype);
-		fsal_error = ERR_FSAL_INVAL;
-		goto errout;
-	}
-	dir_fd = open_by_handle_at(mount_fd, myself->handle, O_PATH|O_NOACCESS);
-	if(dir_fd < 0) {
-		retval = errno;
-		if(retval == ENOENT)
-			fsal_error = ERR_FSAL_STALE;
-		else
-			fsal_error = posix2fsal_error(retval);
-		goto errout;
-	}
-	retval = fstatat(dir_fd, "", &stat, AT_EMPTY_PATH);
-	if(retval < 0) {
-		goto direrr;
-	}
-	if(stat.st_mode & S_ISGID)
-		group = -1; /*setgid bit on dir propagates dir group owner */
-
-	/* create it with no access because we are root when we do this */
-	retval = mknodat(dir_fd, name, create_mode, unix_dev);
-	if(retval < 0) {
-		goto direrr;
-	}
-	retval = name_to_handle_at(dir_fd, name, fh, &mnt_id, 0);
-	if(retval < 0) {
-		goto direrr;
-	}
-
-	retval = fchownat(dir_fd, name,
-			  user, group, AT_SYMLINK_NOFOLLOW);
-	if(retval < 0) {
-		goto direrr;
-	}
-
-	/* now that it is owned properly, set accessible mode */
-	retval = fchmodat(dir_fd, name,
-			  unix_mode, 0);
-	if(retval < 0) {
-		goto direrr;
-	}
-	retval = fstatat(dir_fd, name, &stat, 0);
-	if(retval < 0) {
-		goto direrr;
-	}
-
-	/* allocate an obj_handle and fill it up */
-	hdl = alloc_handle(fh, &stat, NULL, dir_fh, sock_name, dir_hdl->export);
-	if(hdl == NULL) {
-		fsal_error = ERR_FSAL_NOMEM;
-		goto errout;
-	}
-	*handle = &hdl->obj_handle;
-	return fsalstat(ERR_FSAL_NO_ERROR, 0);
-	
-	
-direrr:
-	retval = errno;
-	fsal_error = posix2fsal_error(retval);
-errout:
-	unlinkat(dir_fd, name, 0);
-	close(dir_fd); /* done with parent */
-	return fsalstat(fsal_error, retval);	
+	return fsalstat(ERR_FSAL_NO_ERROR, 0);	
 }
 
 /** makesymlink
- *  Note that we do not set mode bits on symlinks for Linux/POSIX
- *  They are not really settable in the kernel and are not checked
- *  anyway (default is 0777) because open uses that target's mode
+ * 
+ * Creates a new symlink in the catalog.
  */
-
-static fsal_status_t makesymlink(struct fsal_obj_handle *dir_hdl,
-                                 const char *name,
+static fsal_status_t makesymlink(struct fsal_obj_handle *parent_public_handle,
+                                 const char *file_name,
                                  const char *link_path,
-                                 struct attrlist *attrib,
-                                 struct fsal_obj_handle **handle)
+                                 struct attrlist *link_attrs,
+                                 struct fsal_obj_handle **out_link_public_handle)
 {
-	struct dmlite_fsal_obj_handle *myself, *hdl;
-	int mnt_id = 0;
-	int mount_fd, dir_fd = -1;
-	struct stat stat;
-	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
 	int retval = 0;
-	uid_t user;
-	gid_t group;
-	struct file_handle *fh
-		= alloca(sizeof(struct file_handle) + MAX_HANDLE_SZ);
+	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
+	struct dmlite_context *dmlite_context_obj;
+	struct dmlite_fsal_obj_handle *dmlite_parent_priv_handle;
+	struct dmlite_fsal_obj_handle *dmlite_link_priv_handle;
+	struct dmlite_xstat dmlite_xstat_obj;
+	
+	LogFullDebug(COMPONENT_FSAL, "makesymlink: start");
 
-	*handle = NULL; /* poison it first */
-	if( !dir_hdl->ops->handle_is(dir_hdl, DIRECTORY)) {
+	/* Make sure we clean it up first */
+	*out_link_public_handle = NULL;
+	
+	/* Is the directory really a directory? */
+	if( !parent_public_handle->ops->handle_is(parent_public_handle, DIRECTORY)) {
 		LogCrit(COMPONENT_FSAL,
-			"Parent handle is not a directory. hdl = 0x%p",
-			dir_hdl);
+			"makesymlink: given parent handle is not a directory. hdl = 0x%p", parent_public_handle);
 		return fsalstat(ERR_FSAL_NOTDIR, 0);
 	}
-	memset(fh, 0, sizeof(struct file_handle) + MAX_HANDLE_SZ);
-	fh->handle_bytes = MAX_HANDLE_SZ;
-	myself = container_of(dir_hdl, struct dmlite_fsal_obj_handle, obj_handle);
-	mount_fd = dmlite_get_root_fd(dir_hdl->export);
-	user = attrib->owner;
-	group = attrib->group;
-	dir_fd = open_by_handle_at(mount_fd, myself->handle, O_PATH|O_NOACCESS);
-	if(dir_fd < 0) {
-		retval = errno;
-		goto errout;
-	}
-	retval = fstatat(dir_fd, "", &stat, AT_EMPTY_PATH);
-	if(retval < 0) {
-		goto direrr;
-	}
-	if(stat.st_mode & S_ISGID)
-		group = -1; /*setgid bit on dir propagates dir group owner */
 	
-	/* create it with no access because we are root when we do this */
-	retval = symlinkat(link_path, dir_fd, name);
-	if(retval < 0) {
-		goto direrr;
-	}
-	retval = name_to_handle_at(dir_fd, name, fh, &mnt_id, 0);
-	if(retval < 0) {
-		goto linkerr;
-	}
-	retval = fchownat(dir_fd, name, user, group, AT_SYMLINK_NOFOLLOW);
-	if(retval < 0) {
-		goto linkerr;
-	}
-
-	/* now get attributes info, being careful to get the link, not the target */
-	retval = fstatat(dir_fd, name, &stat, AT_SYMLINK_NOFOLLOW);
-	if(retval < 0) {
-		goto linkerr;
-	}
-	close(dir_fd);
-
-	/* allocate an obj_handle and fill it up */
-	hdl = alloc_handle(fh, &stat, link_path, NULL, NULL, dir_hdl->export);
-	if(hdl == NULL) {
-		retval = ENOMEM;
+	/* Fetch the private handler for the given directory (from the public obj_handle) */
+	dmlite_parent_priv_handle = container_of(parent_public_handle, 
+		struct dmlite_fsal_obj_handle, obj_handle);
+	
+	/* Get a dmlite_context object */
+	dmlite_context_obj = dmlite_get_context(parent_public_handle->export);
+	if (dmlite_context_obj == NULL) {
+		LogMajor(COMPONENT_FSAL, "makesymlink: failed to create context");
+		fsal_error = ERR_FSAL_FAULT;
 		goto errout;
 	}
-	*handle = &hdl->obj_handle;
+		
+	/* We start by creating the new entry */
+	dmlite_xstat_obj.parent = dmlite_parent_priv_handle->dmlite.ino;
+	strncpy(dmlite_xstat_obj.name, file_name, NAME_MAX);
+	dmlite_xstat_obj.stat.st_mode = link_attrs->mode;
+	dmlite_xstat_obj.stat.st_uid = link_attrs->owner;
+	dmlite_xstat_obj.stat.st_gid = link_attrs->group;
+	retval = dmlite_icreate(dmlite_context_obj, &dmlite_xstat_obj);
+	if (retval != 0) {
+		LogMajor(COMPONENT_FSAL, "makesymlink: failed to create new entry :: %s",
+			dmlite_error(dmlite_context_obj));
+		fsal_error = ERR_FSAL_FAULT;
+		goto errout;	
+	}
+	
+	/* Fetch the entry info back so that we get the inode */
+	memset(&dmlite_xstat_obj, 0, sizeof(struct dmlite_xstat));
+	retval = dmlite_istatx_by_name(dmlite_context_obj, 
+		dmlite_parent_priv_handle->dmlite.ino, file_name, &dmlite_xstat_obj);
+	if (retval != 0) {
+		LogMajor(COMPONENT_FSAL, "makesymlink: failed to stat new file :: %s", 
+					dmlite_error(dmlite_context_obj));
+		fsal_error = ERR_FSAL_FAULT;
+		goto errout;
+	}
+
+	/* Fill in the link information for the entry we just created */
+	retval = dmlite_isymlink(dmlite_context_obj, dmlite_xstat_obj.stat.st_ino, link_path);
+	if (retval != 0) {
+		LogMajor(COMPONENT_FSAL, "makesymlink: failed to add link info :: %s", 
+					dmlite_error(dmlite_context_obj));
+		fsal_error = ERR_FSAL_FAULT;
+		goto errout;
+	}
+	
+	/* Allocate a handle object and fill it up with the stat info */
+	// TODO: shouldn't we give link info to allocate_handle??
+	dmlite_link_priv_handle = allocate_handle(&dmlite_xstat_obj, 
+		parent_public_handle->export);
+	if(dmlite_link_priv_handle == NULL) {
+		fsal_error = ERR_FSAL_NOMEM;
+		LogMajor(COMPONENT_FSAL, "create: failed to allocate handle");
+		*out_link_public_handle = NULL;
+		goto errout;
+	}
+		
+	/* And return too... */
+	(*out_link_public_handle) = &(dmlite_link_priv_handle->obj_handle);
+
+	/* And we're done... do the final cleanup and return */
+	if (dmlite_context_obj != NULL)
+		dmlite_context_free(dmlite_context_obj);
+
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 
-linkerr:
-	retval = errno;
-	unlinkat(dir_fd, name, 0);
-	goto errout;
-
-direrr:
-	retval = errno;
-	close(dir_fd);
 errout:
-	if(retval == ENOENT)
-		fsal_error = ERR_FSAL_STALE;
-	else
-		fsal_error = posix2fsal_error(retval);
-	return fsalstat(fsal_error, retval);	
+	if (dmlite_context_obj != NULL)
+		dmlite_context_free(dmlite_context_obj);
+	return fsalstat(fsal_error, retval);
 }
 
-static fsal_status_t readsymlink(struct fsal_obj_handle *obj_hdl,
+static fsal_status_t readsymlink(struct fsal_obj_handle *link_public_handle,
                                  char *link_content,
                                  size_t *link_len,
                                  bool_t refresh)
 {
-	struct dmlite_fsal_obj_handle *myself = NULL;
-	int fd, mntfd;
 	int retval = 0;
 	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
-
-	if(obj_hdl->type != SYMBOLIC_LINK) {
+	struct dmlite_context *dmlite_context_obj;
+	struct dmlite_fsal_obj_handle *dmlite_link_priv_handle = NULL;
+	char link_buff[NAME_MAX];
+	
+	LogFullDebug(COMPONENT_FSAL, "readsymlink: start");
+	
+	/* Make sure it's a symlink we're handling */
+	if(link_public_handle->type != SYMBOLIC_LINK) {
 		fsal_error = ERR_FSAL_FAULT;
-		goto out;
+		goto errout;
 	}
-	myself = container_of(obj_hdl, struct dmlite_fsal_obj_handle, obj_handle);
-	if(refresh) { /* lazy load or LRU'd storage */
-		ssize_t retlink;
-		char link_buff[1024];
-
-		if(myself->u.symlink.link_content != NULL) {
-			free(myself->u.symlink.link_content);
-			myself->u.symlink.link_content = NULL;
-			myself->u.symlink.link_size = 0;
-		}
-		mntfd = dmlite_get_root_fd(obj_hdl->export);
-		fd = open_by_handle_at(mntfd, myself->handle, (O_PATH|O_NOACCESS));
-		if(fd < 0) {
-			retval = errno;
-			fsal_error = posix2fsal_error(retval);
-			goto out;
-		}
-		retlink = readlinkat(fd, "", link_buff, 1024);
-		if(retlink < 0) {
-			retval = errno;
-			fsal_error = posix2fsal_error(retval);
-			close(fd);
-			goto out;
-		}
-		close(fd);
-
-		myself->u.symlink.link_content = malloc(retlink + 1);
-		if(myself->u.symlink.link_content == NULL) {
-			fsal_error = ERR_FSAL_NOMEM;
-			goto out;
-		}
-		memcpy(myself->u.symlink.link_content, link_buff, retlink);
-		myself->u.symlink.link_content[retlink] = '\0';
-		myself->u.symlink.link_size = retlink + 1;
+	
+	/* Fetch the private handler for the given entry (from the public obj_handle) */
+	dmlite_link_priv_handle = container_of(link_public_handle, 
+		struct dmlite_fsal_obj_handle, obj_handle);
+		
+	/* Get a dmlite_context object */
+	dmlite_context_obj = dmlite_get_context(link_public_handle->export);
+	if (dmlite_context_obj == NULL) {
+		LogMajor(COMPONENT_FSAL, "readsymlink: failed to create context");
+		fsal_error = ERR_FSAL_FAULT;
+		goto errout;
 	}
-	if(myself->u.symlink.link_content == NULL
-	   || *link_len <= myself->u.symlink.link_size) {
-		fsal_error = ERR_FSAL_FAULT; /* probably a better error?? */
-		goto out;
-	}
-	memcpy(link_content,
-	       myself->u.symlink.link_content,
-	       myself->u.symlink.link_size);
 
-out:
-	*link_len = myself->u.symlink.link_size;
-	return fsalstat(fsal_error, retval);	
+	/* Read in the symlink information for the given inode */
+	retval = dmlite_ireadlink(dmlite_context_obj, dmlite_link_priv_handle->dmlite.ino,
+		link_buff, NAME_MAX);
+	if (retval != 0) {
+		LogMajor(COMPONENT_FSAL, "makesymlink: failed to read link info :: %s", 
+					dmlite_error(dmlite_context_obj));
+		fsal_error = ERR_FSAL_FAULT;
+		goto errout;
+	}
+	
+	/* Fill in the output values */
+	*link_len = NAME_MAX;
+	strncpy(link_content, link_buff, NAME_MAX);
+	
+	// TODO: We need to update the internal link info in the priv handler?
+	// We could use those fields instead of the local buff we use above
+		
+	/* And we're done... do the final cleanup and return */
+	if (dmlite_context_obj != NULL)
+		dmlite_context_free(dmlite_context_obj);
+		
+	return fsalstat(ERR_FSAL_NO_ERROR, 0);
+
+errout:
+	if (dmlite_context_obj != NULL)
+		dmlite_context_free(dmlite_context_obj);
+	return fsalstat(fsal_error, retval);
 }
 
+/**
+ * linkfile
+ * 
+ * Hard link a file... not supported.
+ */
 static fsal_status_t linkfile(struct fsal_obj_handle *obj_hdl,
 			      struct fsal_obj_handle *destdir_hdl,
 			      const char *name)
 {
-	struct dmlite_fsal_obj_handle *myself, *destdir;
-	int srcfd, destdirfd, mntfd;
-	int retval = 0;
-	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
+	LogFullDebug(COMPONENT_FSAL, "linkfile: not supported... should not be called!");
 
-	if( !obj_hdl->export->ops->fs_supports(obj_hdl->export, link_support)) {
-		fsal_error = ERR_FSAL_NOTSUPP;
-		goto out;
-	}
-	myself = container_of(obj_hdl, struct dmlite_fsal_obj_handle, obj_handle);
-	mntfd = dmlite_get_root_fd(obj_hdl->export);
-	srcfd = open_by_handle_at(mntfd, myself->handle, (O_PATH|O_NOACCESS));
-	if(srcfd < 0) {
-		retval = errno;
-		fsal_error = posix2fsal_error(retval);
-		goto out;
-	}
-	destdir = container_of(destdir_hdl, struct dmlite_fsal_obj_handle, obj_handle);
-	destdirfd = open_by_handle_at(mntfd, destdir->handle, (O_PATH|O_NOACCESS));
-	if(destdirfd < 0) {
-		retval = errno;
-		fsal_error = posix2fsal_error(retval);
-		close(srcfd);
-		goto out;
-	}
-	retval = linkat(srcfd, "", destdirfd, name, AT_EMPTY_PATH);
-	if(retval == -1) {
-		retval = errno;
-		fsal_error = posix2fsal_error(retval);
-	}
-
-	close(srcfd);
-	close(destdirfd);
-out:
-	return fsalstat(fsal_error, retval);	
+	return fsalstat(ERR_FSAL_NO_ERROR, 0);	
 }
 
-/* not defined in linux headers so we do it here
- */
-
-struct linux_dirent {
-	unsigned long  d_ino;     /* Inode number */
-	unsigned long  d_off;     /* Offset to next linux_dirent */
-	unsigned short d_reclen;  /* Length of this linux_dirent */
-	char           d_name[];  /* Filename (null-terminated) */
-	/* length is actually (d_reclen - 2 -
-	 * offsetof(struct linux_dirent, d_name)
-	 */
-	/*
-	  char           pad;       // Zero padding byte
-	  char           d_type;    // File type (only since Linux 2.6.4;
-	  // offset is (d_reclen - 1))
-	  */
-};
-
-#define BUF_SIZE 1024
 /**
  * read_dirents
  * read the directory and call through the callback function for
@@ -796,133 +504,154 @@ struct linux_dirent {
  * @param eof [OUT] eof marker TRUE == end of dir
  */
 
-static fsal_status_t read_dirents(struct fsal_obj_handle *dir_hdl,
-				  uint32_t entry_cnt,
-				  struct fsal_cookie *whence,
-				  void *dir_state,
-				  fsal_status_t (*cb)(
-					  const char *name,
-					  unsigned int dtype,
-					  struct fsal_obj_handle *dir_hdl,
-					  void *dir_state,
-					  struct fsal_cookie *cookie),
-                                  bool_t *eof)
+static fsal_status_t read_dirents(struct fsal_obj_handle *dir_public_handle,
+				  				  uint32_t entry_count,
+				  				  struct fsal_cookie *whence,
+				  				  void *dir_state,
+				  				  fsal_status_t (*cb)(
+				  				  	const char *name,
+					  				unsigned int dtype,
+				   					struct fsal_obj_handle *dir_public_handle,
+					  				void *dir_state,
+					  				struct fsal_cookie *cookie),
+                                  	bool_t *eof
+                                  )
 {
-	struct dmlite_fsal_obj_handle *myself;
-	int dirfd, mntfd;
-	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
-	fsal_status_t status;
 	int retval = 0;
-	off_t seekloc = 0;
-	int bpos, cnt, nread;
-	unsigned char d_type;
-	struct linux_dirent *dentry;
+	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
+	struct dmlite_fsal_obj_handle *dmlite_dir_priv_handle;
+	struct dmlite_context *dmlite_context_obj;
+	struct dmlite_idir *dir_fd;
+	struct dmlite_xstat *dir_entry_xstat;
+	fsal_status_t status;
 	struct fsal_cookie *entry_cookie;
-	char buf[BUF_SIZE];
 
-	if(whence != NULL) {
-		if(whence->size != sizeof(off_t)) {
-			fsal_error = posix2fsal_error(EINVAL);
-			retval = errno;
-			goto out;
-		}
-		memcpy(&seekloc, whence->cookie, sizeof(off_t));
-	}
+	LogFullDebug(COMPONENT_FSAL, "read_dirents: start");
+
+	/* Initial checks and allocations */
+	// TODO: handle whence here... it might have the offset if we need it in the future
 	entry_cookie = alloca(sizeof(struct fsal_cookie) + sizeof(off_t));
-	myself = container_of(dir_hdl, struct dmlite_fsal_obj_handle, obj_handle);
-	mntfd = dmlite_get_root_fd(dir_hdl->export);
-	dirfd = open_by_handle_at(mntfd, myself->handle, (O_RDONLY|O_DIRECTORY));
-	if(dirfd < 0) {
-		retval = errno;
-		fsal_error = posix2fsal_error(retval);
-		goto out;
-	}
-	seekloc = lseek(dirfd, seekloc, SEEK_SET);
-	if(seekloc < 0) {
-		retval = errno;
-		fsal_error = posix2fsal_error(retval);
-		goto done;
-	}
-	cnt = 0;
-	do {
-		nread = syscall(SYS_getdents, dirfd, buf, BUF_SIZE);
-		if(nread < 0) {
-			retval = errno;
-			fsal_error = posix2fsal_error(retval);
-			goto done;
-		}
-		if(nread == 0)
-			break;
-		for(bpos = 0; bpos < nread;) {
-			dentry = (struct linux_dirent *)(buf + bpos);
-			if(strcmp(dentry->d_name, ".") == 0 ||
-			   strcmp(dentry->d_name, "..") == 0)
-				goto skip; /* must skip '.' and '..' */
-			d_type = *(buf + bpos + dentry->d_reclen - 1);
-			entry_cookie->size = sizeof(off_t);
-			memcpy(&entry_cookie->cookie, &dentry->d_off, sizeof(off_t));
-
-			/* callback to cache inode */
-			status = cb(dentry->d_name,
-				    d_type,
-				    dir_hdl,
-				    dir_state, entry_cookie);
-			if(FSAL_IS_ERROR(status)) {
-				fsal_error = status.major;
-				retval = status.minor;
-				goto done;
-			}
-		skip:
-			bpos += dentry->d_reclen;
-			cnt++;
-			if(entry_cnt > 0 && cnt >= entry_cnt)
-				goto done;
-		}
-	} while(nread > 0);
-
-	*eof = nread == 0 ? TRUE : FALSE;
-done:
-	close(dirfd);
 	
-out:
-	return fsalstat(fsal_error, retval);	
+	/* Fetch the private handler for the given directory (from the public obj_handle) */
+	dmlite_dir_priv_handle = container_of(dir_public_handle, 
+		struct dmlite_fsal_obj_handle, obj_handle);
+
+	/* Open the directory */
+	dir_fd = dmlite_iopendir(dmlite_context_obj, dmlite_dir_priv_handle->dmlite.ino);
+	if (dir_fd == NULL) {
+		LogMajor(COMPONENT_FSAL, "read_dirents: failed to open dir :: %s",
+			dmlite_error(dmlite_context_obj));
+		fsal_error = ERR_FSAL_FAULT;
+		goto errout;
+	}
+	
+	// TODO: do we need to seek?
+	
+	/* Read the directory, entry by entry */
+	dir_entry_xstat = dmlite_ireaddirx(dmlite_context_obj, dir_fd);
+	// TODO: we need to handle eventual errors here
+	while (dir_entry_xstat != NULL) {
+		//TODO: at least we need to handle the cookie here
+		
+		/* Callback to caller */
+		status = cb(dir_entry_xstat->name, dir_entry_xstat->stat.st_mode,
+			dir_public_handle, dir_state, entry_cookie);
+		
+		/* Read the next entry */	
+		dir_entry_xstat = dmlite_ireaddirx(dmlite_context_obj, dir_fd);
+	}
+	
+	/* Close the directory when we're done */
+	retval = dmlite_iclosedir(dmlite_context_obj, dir_fd);
+	if (retval != 0) {
+		LogMajor(COMPONENT_FSAL, "read_dirents: failed to close dir :: %s",
+			dmlite_error(dmlite_context_obj));
+		fsal_error = ERR_FSAL_FAULT;
+		goto errout;
+	}
+
+errout:
+	/* And we're done... do the final cleanup and return */
+	if (dmlite_context_obj != NULL)
+		dmlite_context_free(dmlite_context_obj);
+		
+	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 }
 
-
-static fsal_status_t renamefile(struct fsal_obj_handle *olddir_hdl,
-				const char *old_name,
-				struct fsal_obj_handle *newdir_hdl,
-				const char *new_name)
+/**
+ * renamefile
+ * 
+ * Renames a file.
+ */
+static fsal_status_t renamefile(struct fsal_obj_handle *old_parent_public_handle,
+								const char *old_name,
+								struct fsal_obj_handle *new_parent_public_handle,
+								const char *new_name)
 {
-	struct dmlite_fsal_obj_handle *olddir, *newdir;
-	int oldfd, newfd, mntfd;
-	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
 	int retval = 0;
+	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
+	struct dmlite_context *dmlite_context_obj;
+	struct dmlite_fsal_obj_handle *dmlite_new_parent_priv_handle;
+	struct dmlite_fsal_obj_handle *dmlite_old_parent_priv_handle;
+	struct dmlite_xstat dmlite_xstat_obj;
+	
+	LogFullDebug(COMPONENT_FSAL, "renamefile: start");
 
-	olddir = container_of(olddir_hdl, struct dmlite_fsal_obj_handle, obj_handle);
-	mntfd = dmlite_get_root_fd(olddir_hdl->export);
-	oldfd = open_by_handle_at(mntfd, olddir->handle, (O_PATH|O_NOACCESS));
-	if(oldfd < 0) {
-		retval = errno;
-		fsal_error = posix2fsal_error(retval);
-		goto out;
+	/* Fetch the private handlers for both old and new directories */
+	dmlite_old_parent_priv_handle = container_of(old_parent_public_handle, 
+		struct dmlite_fsal_obj_handle, obj_handle);
+	dmlite_new_parent_priv_handle = container_of(new_parent_public_handle, 
+		struct dmlite_fsal_obj_handle, obj_handle);
+	
+	/* Get a dmlite_context object */
+	dmlite_context_obj = dmlite_get_context(old_parent_public_handle->export);
+	if (dmlite_context_obj == NULL) {
+		LogMajor(COMPONENT_FSAL, "renamefile: failed to create context");
+		fsal_error = ERR_FSAL_FAULT;
+		goto errout;
 	}
-	newdir = container_of(newdir_hdl, struct dmlite_fsal_obj_handle, obj_handle);
-	newfd = open_by_handle_at(mntfd, newdir->handle, (O_PATH|O_NOACCESS));
-	if(newfd < 0) {
-		retval = errno;
-		fsal_error = posix2fsal_error(retval);
-		close(oldfd);
-		goto out;
+	
+	/* Fetch the current information about the file (we need the inode) */
+	memset(&dmlite_xstat_obj, 0, sizeof(struct dmlite_xstat));
+	retval = dmlite_istatx_by_name(dmlite_context_obj, 
+		dmlite_old_parent_priv_handle->dmlite.ino, old_name, &dmlite_xstat_obj);
+	if (retval != 0) {
+		retval = dmlite_errno(dmlite_context_obj);
+		LogMajor(COMPONENT_FSAL, "renamefile: failed to stat file :: %s", 
+					dmlite_error(dmlite_context_obj));
+		fsal_error = ERR_FSAL_FAULT;
+		goto errout;
 	}
-	retval = renameat(oldfd, old_name, newfd, new_name);
-	if(retval < 0) {
-		retval = errno;
-		fsal_error = posix2fsal_error(retval);
+	
+	/* We first rename the file */
+	retval = dmlite_irename(dmlite_context_obj, dmlite_xstat_obj.stat.st_ino, new_name);
+	if (retval != 0) {
+		retval = dmlite_errno(dmlite_context_obj);
+		LogMajor(COMPONENT_FSAL, "renamefile: failed to rename file :: %s", 
+					dmlite_error(dmlite_context_obj));
+		fsal_error = ERR_FSAL_FAULT;
+		goto errout;
 	}
-	close(oldfd);
-	close(newfd);
-out:
+	
+	/* ... and then we move it to the new directory */
+	retval = dmlite_imove(dmlite_context_obj, dmlite_xstat_obj.stat.st_ino, 
+		dmlite_new_parent_priv_handle->dmlite.ino);
+	if (retval != 0) {
+		LogMajor(COMPONENT_FSAL, "renamefile: failed to move file :: %s",
+					dmlite_error(dmlite_context_obj));
+		fsal_error = ERR_FSAL_FAULT;
+		goto errout;
+	}
+	
+	/* And we're done... do the final cleanup and return */
+	if (dmlite_context_obj != NULL)
+		dmlite_context_free(dmlite_context_obj);
+		
+	return fsalstat(ERR_FSAL_NO_ERROR, 0);
+
+errout:
+	if (dmlite_context_obj != NULL)
+		dmlite_context_free(dmlite_context_obj);
 	return fsalstat(fsal_error, retval);	
 }
 
@@ -931,22 +660,22 @@ out:
  * everywhere except where we explicitly want to to refresh them.
  * NOTE: this is done under protection of the attributes rwlock in the
  * cache entry.
+ * 
+ * TODO: is this really used?
  */
 
 static fsal_status_t getattrs(struct fsal_obj_handle *obj_hdl,
                               struct attrlist *obj_attr)
 {
 	struct dmlite_fsal_obj_handle *myself;
-	int fd = -1, mntfd;
-	int open_flags = O_RDONLY;
-	struct stat stat;
 	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
-	fsal_status_t st;
 	int retval = 0;
-
+	
+	LogFullDebug(COMPONENT_FSAL, "getattrs: start");
+	
 	myself = container_of(obj_hdl, struct dmlite_fsal_obj_handle, obj_handle);
-	mntfd = dmlite_get_root_fd(obj_hdl->export);
-	if(obj_hdl->type == SOCKET_FILE) {
+	//mntfd = dmlite_get_root_fd(obj_hdl->export);
+	/**if(obj_hdl->type == SOCKET_FILE) {
 		fd = open_by_handle_at(mntfd,
 				       myself->u.sock.sock_dir,
 				       (O_PATH|O_NOACCESS));
@@ -976,9 +705,9 @@ static fsal_status_t getattrs(struct fsal_obj_handle *obj_hdl,
 		if(retval < 0) {
 			goto errout;
 		}
-	}
+	}*/
 
-	/* convert attributes */
+	/* convert attributes *//**
 	obj_hdl->attributes.mask = obj_attr->mask;
 	st = posix2fsal_attributes(&stat, &obj_hdl->attributes);
 	if(FSAL_IS_ERROR(st)) {
@@ -999,7 +728,7 @@ errout:
                 fsal_error = posix2fsal_error(retval);
 out:
 	if(fd >= 0)
-		close(fd);
+		close(fd);*/
 	return fsalstat(fsal_error, retval);	
 }
 
@@ -1007,167 +736,115 @@ out:
  * NOTE: this is done under protection of the attributes rwlock in the cache entry.
  */
 
-static fsal_status_t setattrs(struct fsal_obj_handle *obj_hdl,
-			      struct attrlist *attrs)
+static fsal_status_t setattrs(struct fsal_obj_handle *public_handle,
+			      			  struct attrlist *attrs)
 {
-	struct dmlite_fsal_obj_handle *myself;
-	int fd, mntfd;
-	int open_flags = O_RDONLY;
-	struct stat stat;
-	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
 	int retval = 0;
+	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
+	struct dmlite_fsal_obj_handle *dmlite_priv_handle;
+	struct dmlite_context *dmlite_context_obj;
+	struct dmlite_xstat dmlite_xstat_obj;
+	
+	LogFullDebug(COMPONENT_FSAL, "setattrs: start");
 
-	/* apply umask, if mode attribute is to be changed */
-	if(FSAL_TEST_MASK(attrs->mask, ATTR_MODE)) {
+	/* We need to apply the umaks if mode is set */
+	if (FSAL_TEST_MASK(attrs->mask, ATTR_MODE)) {
 		attrs->mode
-			&= ~obj_hdl->export->ops->fs_umask(obj_hdl->export);
+			&= ~public_handle->export->ops->fs_umask(public_handle->export);
 	}
-	myself = container_of(obj_hdl, struct dmlite_fsal_obj_handle, obj_handle);
-	mntfd = dmlite_get_root_fd(obj_hdl->export);
+	
+	/* Fetch the private handler of the file */
+	dmlite_priv_handle = container_of(public_handle,
+		struct dmlite_fsal_obj_handle, obj_handle);
 
-	/* This is yet another "you can't get there from here".  If this object
-	 * is a socket (AF_UNIX), an fd on the socket s useless _period_.
-	 * If it is for a symlink, without O_PATH, you will get an ELOOP error
-	 * and (f)chmod doesn't work for a symlink anyway - not that it matters
-	 * because access checking is not done on the symlink but the final target.
-	 * AF_UNIX sockets are also ozone material.  If the socket is already active
-	 * listeners et al, you can manipulate the mode etc.  If it is just sitting
-	 * there as in you made it with a mknod (one of those leaky abstractions...)
-	 * or the listener forgot to unlink it, it is lame duck.
-	 */
-
-	if(obj_hdl->type == SOCKET_FILE) {
-		fd = open_by_handle_at(mntfd,
-				       myself->u.sock.sock_dir,
-				       (O_PATH|O_NOACCESS));
-		if(fd < 0) {
-			retval = errno;
-			if(retval == ENOENT)
-				fsal_error = ERR_FSAL_STALE;
-			else
-				fsal_error = posix2fsal_error(retval);
-			goto out;
-		}
-		retval = fstatat(fd,
-				 myself->u.sock.sock_name,
-				 &stat,
-				 AT_SYMLINK_NOFOLLOW);
-	} else {
-		if(obj_hdl->type == SYMBOLIC_LINK)
-			open_flags |= O_PATH;
-		else if(obj_hdl->type == FIFO_FILE)
-			open_flags |= O_NONBLOCK;
-		fd = open_by_handle_at(mntfd, myself->handle, open_flags);
-		if(fd < 0) {
-			retval = errno;
-			fsal_error = posix2fsal_error(retval);
-			goto out;
-		}
-		retval = fstatat(fd, "", &stat, (AT_SYMLINK_NOFOLLOW|AT_EMPTY_PATH));
+	/* Get a dmlite_context object */
+	dmlite_context_obj = dmlite_get_context(public_handle->export);
+	if (dmlite_context_obj == NULL) {
+		LogMajor(COMPONENT_FSAL, "setattrs: failed to create context");
+		fsal_error = ERR_FSAL_FAULT;
+		goto errout;
 	}
-	if(retval < 0) {
-		retval = errno;
-		fsal_error = posix2fsal_error(retval);
-		close(fd);
-		goto out;
+	
+	/* Fetch the current information about the file */
+	memset(&dmlite_xstat_obj, 0, sizeof(struct dmlite_xstat));
+	retval = dmlite_istatx(dmlite_context_obj, dmlite_priv_handle->dmlite.ino, &dmlite_xstat_obj);
+	if (retval != 0) {
+		LogMajor(COMPONENT_FSAL, "setattrs: failed to stat file :: %s", 
+					dmlite_error(dmlite_context_obj));
+		fsal_error = ERR_FSAL_FAULT;
+		goto errout;
 	}
-	/** CHMOD **/
-	if(FSAL_TEST_MASK(attrs->mask, ATTR_MODE)) {
-		/* The POSIX chmod call doesn't affect the symlink object, but
-		 * the entry it points to. So we must ignore it.
-		 */
-		if(!S_ISLNK(stat.st_mode)) {
-			if(obj_hdl->type == SOCKET_FILE)
-				retval = fchmodat(fd,
-						  myself->u.sock.sock_name,
-						  fsal2unix_mode(attrs->mode), 0);
-			else
-				retval = fchmod(fd, fsal2unix_mode(attrs->mode));
-
-			if(retval != 0) {
-				goto fileerr;
-			}
+	
+	/* chmod: call dmlite_isetmode */
+	if(FSAL_TEST_MASK(attrs->mask, ATTR_MODE) && public_handle->type != SYMBOLIC_LINK) {
+		retval = dmlite_isetmode(dmlite_context_obj, dmlite_priv_handle->dmlite.ino, 
+			-1, -1, fsal2unix_mode(attrs->mode), -1, NULL);
+		if (retval != 0) {
+			LogMajor(COMPONENT_FSAL, "setattrs: failed to set mode :: %s",
+					dmlite_error(dmlite_context_obj));
+			fsal_error = ERR_FSAL_FAULT;
+			goto errout;
 		}
 	}
-		
-	/**  CHOWN  **/
+	/* chown: call dmlite_isetmode **/
 	if(FSAL_TEST_MASK(attrs->mask,
 			  ATTR_OWNER | ATTR_GROUP)) {
-		uid_t user = FSAL_TEST_MASK(attrs->mask, ATTR_OWNER)
-                        ? (int)attrs->owner : -1;
-		gid_t group = FSAL_TEST_MASK(attrs->mask, ATTR_GROUP)
-                        ? (int)attrs->group : -1;
-
-		if(obj_hdl->type == SOCKET_FILE)
-			retval = fchownat(fd,
-					  myself->u.sock.sock_name,
-					  user,
-					  group,
-					  AT_SYMLINK_NOFOLLOW);
-		else
-			retval = fchown(fd, user, group);
-
-		if(retval) {
-			goto fileerr;
-		}
+		uid_t user = FSAL_TEST_MASK(attrs->mask, ATTR_OWNER) ? (int)attrs->owner : -1;
+		gid_t group = FSAL_TEST_MASK(attrs->mask, ATTR_GROUP) ? (int)attrs->group : -1;
+		retval = dmlite_isetmode(dmlite_context_obj, dmlite_priv_handle->dmlite.ino,
+			user, group, -1, -1, NULL);
+		if (retval != 0) {
+			LogMajor(COMPONENT_FSAL, "setattrs: failed to change owner/group :: %s",
+					dmlite_error(dmlite_context_obj));
+			fsal_error = ERR_FSAL_FAULT;
+			goto errout;
+		}		
 	}
-		
-	/**  UTIME  **/
+	/* utime: we do this one with dmlite_iutime */
 	if(FSAL_TEST_MASK(attrs->mask, ATTR_ATIME | ATTR_MTIME)) {
-		struct timeval timebuf[2];
-
-		/* Atime */
-		timebuf[0].tv_sec =
-			(FSAL_TEST_MASK(attrs->mask, ATTR_ATIME) ?
-                         (time_t) attrs->atime.seconds : stat.st_atime);
-		timebuf[0].tv_usec = 0;
-
-		/* Mtime */
-		timebuf[1].tv_sec =
-			(FSAL_TEST_MASK(attrs->mask, ATTR_MTIME) ?
-			 (time_t) attrs->mtime.seconds : stat.st_mtime);
-		timebuf[1].tv_usec = 0;
-		if(obj_hdl->type == SOCKET_FILE)
-			retval = futimesat(fd,
-					   myself->u.sock.sock_name,
-					   timebuf);
-		else
-			retval = futimes(fd, timebuf);
-		if(retval != 0) {
-			goto fileerr;
-		}
+		//TODO: implement this... dmlite expects a utimbuf
 	}
-	close(fd);
-	return fsalstat(fsal_error, retval);	
 
-fileerr:
-        retval = errno;
-        close(fd);
-        fsal_error = posix2fsal_error(retval);
-out:
-	return fsalstat(fsal_error, retval);	
+	/* And we're done... do the final cleanup and return */
+	if (dmlite_context_obj != NULL)
+		dmlite_context_free(dmlite_context_obj);
+		
+	return fsalstat(ERR_FSAL_NO_ERROR, 0);
+
+errout:
+	if (dmlite_context_obj != NULL)
+		dmlite_context_free(dmlite_context_obj);
+	return fsalstat(fsal_error, retval);
 }
 
 /* compare
  * compare two handles.
  * return TRUE for equal, FALSE for anything else
  */
-static bool_t compare(struct fsal_obj_handle *obj_hdl,
-                      struct fsal_obj_handle *other_hdl)
+static bool_t compare(struct fsal_obj_handle *public_handle,
+                      struct fsal_obj_handle *other_public_handle)
 {
-	struct dmlite_fsal_obj_handle *myself, *other;
+	struct dmlite_fsal_obj_handle *dmlite_priv_handle;
+	struct dmlite_fsal_obj_handle *dmlite_other_priv_handle;
 
-	if( !other_hdl)
+	LogFullDebug(COMPONENT_FSAL, "compare: start");
+
+	/* Basic consistency */
+	if(!other_public_handle)
 		return FALSE;
-	myself = container_of(obj_hdl, struct dmlite_fsal_obj_handle, obj_handle);
-	other = container_of(other_hdl, struct dmlite_fsal_obj_handle, obj_handle);
-	if((obj_hdl->type != other_hdl->type) ||
-	   (myself->handle->handle_type != other->handle->handle_type) ||
-	   (myself->handle->handle_bytes != other->handle->handle_bytes))
+		
+	/* Fetch the private handlers for both entries */
+	dmlite_priv_handle = container_of(public_handle, 
+		struct dmlite_fsal_obj_handle, obj_handle);
+	dmlite_other_priv_handle = container_of(other_public_handle, 
+		struct dmlite_fsal_obj_handle, obj_handle);
+	
+	/* Compare both public and private members of the handles */
+	if((public_handle->type != other_public_handle->type) ||
+	   (dmlite_priv_handle->dmlite.ino != dmlite_other_priv_handle->dmlite.ino))
 		return FALSE;
-	return memcmp(myself->handle->f_handle,
-		      other->handle->f_handle,
-		      myself->handle->handle_bytes) ? FALSE : TRUE;
+		
+	return TRUE;
 }
 
 /* file_truncate
@@ -1178,86 +855,70 @@ static bool_t compare(struct fsal_obj_handle *obj_hdl,
 static fsal_status_t file_truncate(struct fsal_obj_handle *obj_hdl,
 				   uint64_t length)
 {
-	struct dmlite_fsal_obj_handle *myself;
-	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
-	int fd, mount_fd;
-	int retval = 0;
+	LogFullDebug(COMPONENT_FSAL, "file_truncate: not supported... should not be called!");
 
-	if(obj_hdl->type != REGULAR_FILE) {
-		fsal_error = ERR_FSAL_INVAL;
-		goto errout;
-	}
-	myself = container_of(obj_hdl, struct dmlite_fsal_obj_handle, obj_handle);
-	mount_fd = dmlite_get_root_fd(obj_hdl->export);
-	fd = open_by_handle_at(mount_fd, myself->handle, O_RDWR);
-	if(fd < 0) {
-		retval = errno;
-		if(retval == ENOENT)
-			fsal_error = ERR_FSAL_STALE;
-		else
-			fsal_error = posix2fsal_error(retval);
-		goto errout;
-	}
-	retval = ftruncate(fd, length);
-	if(retval < 0) {
-		retval = errno;
-		fsal_error = posix2fsal_error(retval);
-	}
-	close(fd);
-	
-errout:
-	return fsalstat(fsal_error, retval);	
+	return fsalstat(ERR_FSAL_NO_ERROR, 0);	
 }
 
 /* file_unlink
  * unlink the named file in the directory
  */
-
-static fsal_status_t file_unlink(struct fsal_obj_handle *dir_hdl,
-				 const char *name)
+static fsal_status_t file_unlink(struct fsal_obj_handle *parent_public_handle,
+				 				 const char *name)
 {
-	struct dmlite_fsal_obj_handle *myself;
-	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
-	struct stat stat;
-	int fd, mount_fd;
 	int retval = 0;
+	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
+	struct dmlite_fsal_obj_handle *dmlite_parent_priv_handle;
+	struct dmlite_context *dmlite_context_obj;
+	struct dmlite_xstat dmlite_xstat_obj;
 
-	myself = container_of(dir_hdl, struct dmlite_fsal_obj_handle, obj_handle);
-	mount_fd = dmlite_get_root_fd(dir_hdl->export);
-	fd = open_by_handle_at(mount_fd, myself->handle, O_PATH|O_RDWR);
-	if(fd < 0) {
-		retval = errno;
-		if(retval == ENOENT)
-			fsal_error = ERR_FSAL_STALE;
-		else
-			fsal_error = posix2fsal_error(retval);
-		goto out;
-	}
-	retval = fstatat(fd, name, &stat, AT_SYMLINK_NOFOLLOW);
-	if(retval < 0) {
-		retval = errno;
-		if(retval == ENOENT)
-			fsal_error = ERR_FSAL_STALE;
-		else
-			fsal_error = posix2fsal_error(retval);
+	LogFullDebug(COMPONENT_FSAL, "file_unlink: start");
+
+	/* Fetch the private handler of the file */
+	dmlite_parent_priv_handle = container_of(parent_public_handle, 
+		struct dmlite_fsal_obj_handle, obj_handle);
+	
+	/* Get a dmlite_context object */
+	dmlite_context_obj = dmlite_get_context(parent_public_handle->export);
+	if (dmlite_context_obj == NULL) {
+		LogMajor(COMPONENT_FSAL, "file_unlink: failed to create context");
+		fsal_error = ERR_FSAL_FAULT;
 		goto errout;
 	}
-	retval = unlinkat(fd, name,
-			  (S_ISDIR(stat.st_mode)) ? AT_REMOVEDIR : 0);
-	if(retval < 0) {
-		retval = errno;
-		if(retval == ENOENT)
-			fsal_error = ERR_FSAL_STALE;
-		else
-			fsal_error = posix2fsal_error(retval);
+	
+	/* Fetch the current information about the file */
+	memset(&dmlite_xstat_obj, 0, sizeof(struct dmlite_xstat));
+	retval = dmlite_istatx(dmlite_context_obj, 
+		dmlite_parent_priv_handle->dmlite.ino, &dmlite_xstat_obj);
+	if (retval != 0) {
+		LogMajor(COMPONENT_FSAL, "file_unlink: failed to stat file :: %s", 
+					dmlite_error(dmlite_context_obj));
+		fsal_error = ERR_FSAL_FAULT;
+		goto errout;
 	}
 	
-errout:
-	close(fd);
-out:
-	return fsalstat(fsal_error, retval);	
-}
+	/* Unlink using the inode from above */
+	retval = dmlite_iunlink(dmlite_context_obj, dmlite_xstat_obj.stat.st_ino);
+	if (retval != 0) {
+		LogMajor(COMPONENT_FSAL, "file_unlink: failed to stat file :: %s", 
+					dmlite_error(dmlite_context_obj));
+		fsal_error = ERR_FSAL_FAULT;
+		goto errout;
+	}
+	
+	// TODO: we could make use of unlink_by_name to do it with one single call
+	
+	/* And we're done... do the final cleanup and return */
+	if (dmlite_context_obj != NULL)
+		dmlite_context_free(dmlite_context_obj);
+		
+	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 
+errout:
+	if (dmlite_context_obj != NULL)
+		dmlite_context_free(dmlite_context_obj);
+	return fsalstat(fsal_error, retval);
+}
 
 /* handle_digest
  * fill in the opaque f/s file handle part.
@@ -1265,64 +926,63 @@ out:
  * at which point, remove memset here because the caller is zeroing
  * the whole struct.
  */
-
-static fsal_status_t handle_digest(struct fsal_obj_handle *obj_hdl,
+static fsal_status_t handle_digest(struct fsal_obj_handle *public_handle,
                                    fsal_digesttype_t output_type,
                                    struct gsh_buffdesc *fh_desc)
 {
 	uint32_t ino32;
 	uint64_t ino64;
-	struct dmlite_fsal_obj_handle *myself;
-	struct file_handle *fh;
-	size_t fh_size;
+	struct dmlite_fsal_obj_handle *dmlite_priv_handle;
+	int handle_size;
+	
+	LogFullDebug(COMPONENT_FSAL, "handle_digest: start");
 
-	/* sanity checks */
-        if( !fh_desc)
+	/* Some basic checks */
+    if( !fh_desc)
 		return fsalstat(ERR_FSAL_FAULT, 0);
-	myself = container_of(obj_hdl, struct dmlite_fsal_obj_handle, obj_handle);
-	fh = myself->handle;
+		
+	dmlite_priv_handle = container_of(public_handle, struct dmlite_fsal_obj_handle, obj_handle);
 
 	switch(output_type) {
 	case FSAL_DIGEST_NFSV2:
 	case FSAL_DIGEST_NFSV3:
 	case FSAL_DIGEST_NFSV4:
-		fh_size = dmlite_sizeof_handle(fh);
-                if(fh_desc->len < fh_size)
-                        goto errout;
-                memcpy(fh_desc->addr, fh, fh_size);
+		handle_size = sizeof(public_handle);
+		if(fh_desc->len < handle_size)
+			goto errout;
+		memcpy(fh_desc->addr, public_handle, handle_size);
 		break;
 	case FSAL_DIGEST_FILEID2:
-		fh_size = FSAL_DIGEST_SIZE_FILEID2;
-		if(fh_desc->len < fh_size)
+		handle_size = FSAL_DIGEST_SIZE_FILEID2;
+		if(fh_desc->len < handle_size)
 			goto errout;
-		memcpy(fh_desc->addr, fh->f_handle, fh_size);
+		memcpy(fh_desc->addr, &dmlite_priv_handle->dmlite.ino, handle_size);
 		break;
 	case FSAL_DIGEST_FILEID3:
-		fh_size = FSAL_DIGEST_SIZE_FILEID3;
-		if(fh_desc->len < fh_size)
+		handle_size = FSAL_DIGEST_SIZE_FILEID3;
+		if(fh_desc->len < handle_size)
 			goto errout;
-		memcpy(&ino32, fh->f_handle, sizeof(ino32));
+		memcpy(&ino32, &dmlite_priv_handle->dmlite.ino, sizeof(ino32));
 		ino64 = ino32;
-		memcpy(fh_desc->addr, &ino64, fh_size);
+		memcpy(fh_desc->addr, &ino64, handle_size);
 		break;
 	case FSAL_DIGEST_FILEID4:
-		fh_size = FSAL_DIGEST_SIZE_FILEID4;
-		if(fh_desc->len < fh_size)
+		handle_size = FSAL_DIGEST_SIZE_FILEID4;
+		if(fh_desc->len < handle_size)
 			goto errout;
-		memcpy(&ino32, fh->f_handle, sizeof(ino32));
+		memcpy(&ino32, &dmlite_priv_handle->dmlite.ino, sizeof(ino32));
 		ino64 = ino32;
-		memcpy(fh_desc->addr, &ino64, fh_size);
+		memcpy(fh_desc->addr, &ino64, handle_size);
 		break;
 	default:
 		return fsalstat(ERR_FSAL_SERVERFAULT, 0);
 	}
-	fh_desc->len = fh_size;
+	fh_desc->len = handle_size;
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 
 errout:
-	LogMajor(COMPONENT_FSAL,
-		 "Space too small for handle.  need %lu, have %lu",
-		 fh_size, fh_desc->len);
+	LogMajor(COMPONENT_FSAL, "handle_digest: space too small for handle. need %lu, have %lu",
+		 handle_size, fh_desc->len);
 	return fsalstat(ERR_FSAL_TOOSMALL, 0);
 }
 
@@ -1333,14 +993,17 @@ errout:
  * after the handle is released.
  */
 
-static void handle_to_key(struct fsal_obj_handle *obj_hdl,
+static void handle_to_key(struct fsal_obj_handle *public_handle,
                           struct gsh_buffdesc *fh_desc)
 {
-	struct dmlite_fsal_obj_handle *dmlite_handle_obj;
+	struct dmlite_fsal_obj_handle *dmlite_priv_handle;
 
-	dmlite_handle_obj = container_of(obj_hdl, struct dmlite_fsal_obj_handle, obj_handle);
-	fh_desc->addr = dmlite_handle_obj;
-	fh_desc->len = sizeof(struct dmlite_fsal_obj_handle);
+	LogFullDebug(COMPONENT_FSAL, "handle_to_key: start");
+
+	dmlite_priv_handle = container_of(public_handle, 
+		struct dmlite_fsal_obj_handle, obj_handle);
+	memcpy(fh_desc->addr, &dmlite_priv_handle->dmlite, sizeof(dmlite_priv_handle->dmlite)); 
+	fh_desc->len = sizeof(dmlite_priv_handle->dmlite);
 }
 
 /*
@@ -1354,6 +1017,8 @@ static fsal_status_t release(struct fsal_obj_handle *obj_hdl)
 	struct dmlite_fsal_obj_handle *myself;
 	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
 	int retval = 0;
+
+	LogFullDebug(COMPONENT_FSAL, "release: start");
 
 	myself = container_of(obj_hdl, struct dmlite_fsal_obj_handle, obj_handle);
 	pthread_mutex_lock(&obj_hdl->lock);
@@ -1423,81 +1088,61 @@ void dmlite_handle_ops_init(struct fsal_obj_ops *ops)
 /* 
  * export methods that create object handles
  */
-fsal_status_t dmlite_lookup_path(struct fsal_export *exp_hdl,
-			         const char *path,
-			         struct fsal_obj_handle **handle)
+fsal_status_t dmlite_lookup_path(struct fsal_export *export_handle,
+			         			 const char *path,
+			         			 struct fsal_obj_handle **out_handle)
 {
 	int retval = 0;
 	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
-        struct dm_manager *dmlite_manager_obj;
-        struct dm_context *dmlite_context_obj;
-        struct credentials dmlite_creds_obj;
-	struct dmlite_fsal_obj_handle *dmlite_handle_obj;
-	struct xstat dmlite_xstat_obj;
+	struct dmlite_context *dmlite_context_obj;
+	struct dmlite_fsal_obj_handle *dmlite_priv_handle;
+	struct dmlite_xstat dmlite_xstat_obj;
 
-        LogFullDebug(COMPONENT_FSAL, "dmlite_lookup_path: start :: %s", path);
+	LogFullDebug(COMPONENT_FSAL, "dmlite_lookup_path: start :: %s", path);
 
-        /* Get a dm_context object (need to get hold of a manager first) */
-        dmlite_manager_obj = dmlite_get_manager(exp_hdl);
-        if (dmlite_manager_obj == NULL) {
-                LogMajor(COMPONENT_FSAL, "dmlite_lookup_path: failed to get manager");
-                fsal_error = ERR_FSAL_FAULT;
-                goto errout;
-        }
-        dmlite_context_obj = dm_context_new(dmlite_manager_obj);
-        if (dmlite_context_obj == NULL) {
-                LogMajor(COMPONENT_FSAL, "dmlite_lookup_path: failed to create context");
-                fsal_error = ERR_FSAL_FAULT;
-                goto errout;
-        }
-
-        /* Set user credentials first :: TODO: actually use credentials */
-        dmlite_creds_obj.mech = "ID";
-        dmlite_creds_obj.client_name = "/C=CH/O=CERN/OU=GD/CN=Test user 1";
-        retval = dm_setcredentials(dmlite_context_obj, &dmlite_creds_obj);
-        if (retval != 0) {
-                LogMajor(COMPONENT_FSAL, "dmlite_lookup_path: failed to set credentials :: %s",
-                        dm_error(dmlite_context_obj));
-                fsal_error = ERR_FSAL_FAULT;
-                goto errout;
-        }
-
-        /* Fetch the stat information for the request path */
-        memset(&dmlite_xstat_obj, 0, sizeof(struct xstat));
-        if(strcmp(path, "/") == 0) { // root file handle
-                retval = dm_xstat(dmlite_context_obj, "/", &dmlite_xstat_obj);
-        } else { // some other handle
-                retval = dm_xstat(dmlite_context_obj, path, &dmlite_xstat_obj);
-        }
-        if (retval != 0) {
-                retval = dm_errno(dmlite_context_obj);
-                LogMajor(COMPONENT_FSAL, "dmlite_lookup_path: failed to lookup %s :: %s", 
-                        path, dm_error(dmlite_context_obj));
-                fsal_error = ERR_FSAL_FAULT;
-                goto errout;
-        }
-
-	/* Allocate a handle object and fill it up with the stat info */
-	dmlite_handle_obj = allocate_handle(&(dmlite_xstat_obj.stat), exp_hdl);
-	if(dmlite_handle_obj == NULL) {
-		fsal_error = ERR_FSAL_NOMEM;
-                LogMajor(COMPONENT_FSAL, "dmlite_lookup_path: failed to allocate handle");
-		*handle = NULL; /* poison it */
+	/* Get a dmlite_context object */
+	dmlite_context_obj = dmlite_get_context(export_handle);
+	if (dmlite_context_obj == NULL) {
+		LogMajor(COMPONENT_FSAL, "file_unlink: failed to create context");
+		fsal_error = ERR_FSAL_FAULT;
+		goto errout;
+	}
+	
+	/* Fetch the stat information for the request path */
+	memset(&dmlite_xstat_obj, 0, sizeof(struct dmlite_xstat));
+	if(strcmp(path, "/") == 0) { // root file handle
+		retval = dmlite_statx(dmlite_context_obj, "/", &dmlite_xstat_obj);
+	} else { // some other handle
+		retval = dmlite_statx(dmlite_context_obj, path, &dmlite_xstat_obj);
+	}
+	if (retval != 0) {
+		LogMajor(COMPONENT_FSAL, "dmlite_lookup_path: failed to lookup :: %s", 
+					dmlite_error(dmlite_context_obj));
+		fsal_error = ERR_FSAL_FAULT;
 		goto errout;
 	}
 
-        /* And return too... */
-        (*handle) = &(dmlite_handle_obj->obj_handle);
+	/* Allocate a handle object and fill it up with the stat info */
+	dmlite_priv_handle = allocate_handle(&dmlite_xstat_obj, export_handle);
+	if(dmlite_priv_handle == NULL) {
+		fsal_error = ERR_FSAL_NOMEM;
+		LogMajor(COMPONENT_FSAL, "dmlite_lookup_path: failed to allocate handle");
+		*out_handle = NULL; /* poison it */
+		goto errout;
+	}
 
-        /* And we're done... do the final cleanup and return */
-        //if (dmlite_context_obj != NULL)
-        //        dm_context_free(dmlite_context_obj);
+	/* And return too... */
+	(*out_handle) = &(dmlite_priv_handle->obj_handle);
+
+	/* And we're done... do the final cleanup and return */
+	if (dmlite_context_obj != NULL)
+		dmlite_context_free(dmlite_context_obj);
 
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 
 errout:
-        if (dmlite_context_obj != NULL)
-                dm_context_free(dmlite_context_obj);
+	if (dmlite_context_obj != NULL)
+		dmlite_context_free(dmlite_context_obj);
 	return fsalstat(fsal_error, retval);	
 }
 
@@ -1512,66 +1157,14 @@ errout:
  * Ideas and/or clever hacks are welcome...
  */
 
-fsal_status_t dmlite_create_handle(struct fsal_export *exp_hdl,
-				struct gsh_buffdesc *hdl_desc,
-				struct fsal_obj_handle **handle)
+fsal_status_t dmlite_create_handle(struct fsal_export *export_handle,
+								   struct gsh_buffdesc *hdl_desc,
+								   struct fsal_obj_handle **out_handle)
 {
-	struct dmlite_fsal_obj_handle *hdl;
-	struct stat stat;
-	struct file_handle  *fh;
-	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
-	int retval = 0;
-	int fd;
-	int mount_fd = dmlite_get_root_fd(exp_hdl);
-	char *link_content = NULL;
-	ssize_t retlink;
-	char link_buff[PATH_MAX];
+	LogFullDebug(COMPONENT_FSAL, "dmlite_create_handle: start");
 
-        LogFullDebug(COMPONENT_FSAL, "dmlite_create_handle: start");
+	// TODO: do we need this one?
 
-	*handle = NULL; /* poison it first */
-	if((hdl_desc->len > (sizeof(struct file_handle) + MAX_HANDLE_SZ)) ||
-	   (((struct file_handle *)(hdl_desc->addr))->handle_bytes >  MAX_HANDLE_SZ))
-		return fsalstat(ERR_FSAL_FAULT, 0);
-
-	fh = alloca(hdl_desc->len);
-	memcpy(fh, hdl_desc->addr, hdl_desc->len);  /* struct aligned copy */
-	fd = open_by_handle_at(mount_fd, fh, O_PATH|O_NOACCESS);
-	if(fd < 0) {
-		retval = errno;
-		fsal_error = posix2fsal_error(retval);
-		goto errout;
-	}
-	retval = fstatat(fd, "", &stat, AT_EMPTY_PATH);
-	if(retval < 0) {
-		retval = errno;
-		fsal_error = posix2fsal_error(retval);
-		close(fd);
-		goto errout;
-	}
-	if(S_ISLNK(stat.st_mode)) { /* I could lazy eval this... */
-		retlink = readlinkat(fd, "", link_buff, PATH_MAX);
-		if(retlink < 0 || retlink == PATH_MAX) {
-			retval = errno;
-			if(retlink == PATH_MAX)
-				retval = ENAMETOOLONG;
-			fsal_error = posix2fsal_error(retval);
-			close(fd);
-			goto errout;
-		}
-		link_buff[retlink] = '\0';
-		link_content = &link_buff[0];
-	}
-	close(fd);
-
-	hdl = alloc_handle(fh, &stat, link_content, NULL, NULL, exp_hdl);
-	if(hdl == NULL) {
-		fsal_error = ERR_FSAL_NOMEM;
-		goto errout;
-	}
-	*handle = &hdl->obj_handle;
-	
-errout:
-	return fsalstat(fsal_error, retval);	
+	return fsalstat(ERR_FSAL_NO_ERROR, 0);	
 }
 

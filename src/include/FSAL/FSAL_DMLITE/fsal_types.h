@@ -110,7 +110,7 @@ typedef struct
   fsal_staticfsinfo_t * fe_static_fs_info;     /* Must be the first entry in this structure */
 
   char          fstype[MAXNAMLEN] ;
-  dm_manager	manager ;
+  dmlite_manager	manager ;
   dmlite_file_handle_t root_handle ;
 } dmlitefsal_export_context_t;
 

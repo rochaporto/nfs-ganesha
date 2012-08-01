@@ -39,7 +39,7 @@
  * as inlines. Glibc versions are externs to glibc...
  */
 
-#define MAX_HANDLE_SZ 128
+#define MAX_HANDLE_SZ PATH_MAX
 typedef unsigned int __u32;
 
 struct file_handle {
