@@ -999,11 +999,11 @@ static void handle_to_key(struct fsal_obj_handle *public_handle,
 	struct dmlite_fsal_obj_handle *dmlite_priv_handle;
 
 	LogFullDebug(COMPONENT_FSAL, "handle_to_key: start");
-
+	
 	dmlite_priv_handle = container_of(public_handle, 
 		struct dmlite_fsal_obj_handle, obj_handle);
-	memcpy(fh_desc->addr, &dmlite_priv_handle->dmlite, sizeof(dmlite_priv_handle->dmlite)); 
-	fh_desc->len = sizeof(dmlite_priv_handle->dmlite);
+	fh_desc->addr = &dmlite_priv_handle->dmlite.ino; 
+	fh_desc->len = sizeof(dmlite_priv_handle->dmlite.ino);
 }
 
 /*
