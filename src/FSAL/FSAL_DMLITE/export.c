@@ -47,7 +47,6 @@
 #include "dmlite_methods.h"
 #include "FSAL/fsal_commonlib.h"
 #include "FSAL/fsal_config.h"
-#include <FSAL/FSAL_DMLITE/fsal_handle_syscalls.h>
 
 #include <dmlite/c/dmlite.h>
 
@@ -60,7 +59,6 @@
 struct dmlite_fsal_export {
 	struct fsal_export export;
     struct dmlite_manager *manager;
-	struct file_handle *root_handle;
 };
 
 /* Methods to be called from other DMLITE objects (like handle) */
@@ -96,8 +94,7 @@ struct dmlite_context * dmlite_get_context(struct fsal_export *export_handle) {
 	
 	/* Set user credentials 
 	 * TODO: actually use credentials, and probably move this somewhere else */
-	dmlite_creds_obj.extra = NULL;
-	dmlite_creds_obj.nfqans = 0;
+	memset(&dmlite_creds_obj, 0, sizeof(dmlite_creds_obj));
 	dmlite_creds_obj.mech = "ID";
 	dmlite_creds_obj.client_name = "/C=CH/O=CERN/OU=GD/CN=Test user 1";
 	retval = dmlite_setcredentials(dmlite_context_obj, &dmlite_creds_obj);
@@ -135,8 +132,7 @@ static fsal_status_t release(struct fsal_export *exp_hdl)
 		goto errout;
 	}
 	fsal_detach_export(exp_hdl->fsal, &exp_hdl->exports);
-	if(myself->root_handle != NULL)
-		free(myself->root_handle);
+
 	myself->export.ops = NULL; /* poison myself */
 	pthread_mutex_unlock(&exp_hdl->lock);
 
@@ -339,20 +335,22 @@ static fsal_status_t set_quota(struct fsal_export *exp_hdl,
  */
 
 static fsal_status_t extract_handle(struct fsal_export *exp_hdl,
-				    fsal_digesttype_t in_type,
-				    struct netbuf *fh_desc)
+				    				fsal_digesttype_t in_type,
+				    				struct netbuf *fh_desc)
 {
-	struct file_handle *hdl;
+	struct dmlite_handle *dmlite_handle_obj;
 	size_t fh_size;
 
-        LogFullDebug(COMPONENT_FSAL, "extract_handle: start");
+	LogFullDebug(COMPONENT_FSAL, "extract_handle: start");
 
 	/* sanity checks */
 	if( !fh_desc || !fh_desc->buf)
 		return fsalstat(ERR_FSAL_FAULT, 0);
 
-	hdl = (struct file_handle *)fh_desc->buf;
-	fh_size = dmlite_sizeof_handle(hdl);
+	/* Fetch our internal dmlite_handle from the buffer */
+	dmlite_handle_obj = (struct dmlite_handle *)fh_desc->buf;
+	fh_size = sizeof(struct dmlite_handle);
+	
 	if(in_type == FSAL_DIGEST_NFSV2) {
 		if(fh_desc->len < fh_size) {
 			LogMajor(COMPONENT_FSAL,
@@ -406,11 +404,11 @@ void dmlite_export_ops_init(struct export_ops *ops)
  */
 
 fsal_status_t dmlite_create_export(struct fsal_module *fsal_hdl,
-				const char *export_path,
-				const char *fs_options,
-				struct exportlist__ *exp_entry,
-				struct fsal_module *next_fsal,
-				struct fsal_export **export)
+								   const char *export_path,
+								   const char *fs_options,
+								   struct exportlist__ *exp_entry,
+								   struct fsal_module *next_fsal,
+								   struct fsal_export **export)
 {
 	int retval = 0;
 	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
@@ -451,8 +449,7 @@ fsal_status_t dmlite_create_export(struct fsal_module *fsal_hdl,
 	retval = fsal_attach_export(fsal_hdl, &dmlite_export_obj->export.exports);
 	if(retval != 0) {
 		LogMajor(COMPONENT_FSAL, "dmlite_create_export: failed to attach FSAL");
-		fsal_error = ERR_FSAL_FAULT;
-		goto errout; /* seriously bad */
+		return fsalstat(ERR_FSAL_FAULT, 0);
 	}
 	dmlite_export_obj->export.fsal = fsal_hdl;
 
@@ -478,8 +475,6 @@ fsal_status_t dmlite_create_export(struct fsal_module *fsal_hdl,
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 
 errout:
-	if(dmlite_export_obj->root_handle != NULL)
-		free(dmlite_export_obj->root_handle);
 	if(dmlite_export_obj->manager != NULL)
 		dmlite_manager_free(dmlite_export_obj->manager);
 	dmlite_export_obj->export.ops = NULL; /* poison myself */

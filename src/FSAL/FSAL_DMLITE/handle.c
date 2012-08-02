@@ -35,7 +35,6 @@
 #endif
 
 #include "fsal.h"
-#include <FSAL/FSAL_DMLITE/fsal_handle_syscalls.h>
 #include <libgen.h>             /* used for 'dirname' */
 #include <pthread.h>
 #include <string.h>
@@ -67,9 +66,9 @@ static struct dmlite_fsal_obj_handle *allocate_handle(struct dmlite_xstat *dmlit
 	LogFullDebug(COMPONENT_FSAL, "allocate_handle: start");
 	
 	dmlite_priv_obj = malloc(sizeof(struct dmlite_fsal_obj_handle));
-	
 	if (dmlite_priv_obj == NULL)
 		return NULL;
+	memset(dmlite_priv_obj, 0, (sizeof(struct dmlite_fsal_obj_handle)));
 
 	/* Start with setting defaults for the internal properties */
 	if(dmlite_priv_obj->obj_handle.type == REGULAR_FILE) {
@@ -80,10 +79,9 @@ static struct dmlite_fsal_obj_handle *allocate_handle(struct dmlite_xstat *dmlit
 	
 	/* Then set the dmlite specific (also private) properties */
 	dmlite_priv_obj->dmlite.ino = dmlite_stat->stat.st_ino;
-	strncpy(dmlite_priv_obj->dmlite.name, dmlite_stat->name, NAME_MAX);
+	//strncpy(dmlite_priv_obj->dmlite.name, dmlite_stat->name, NAME_MAX);
 
 	/* Finally set public pointer (obj_handle from fsal_api.h) properties */
-	//memset(&dmlite_priv_obj, 0, (sizeof(struct dmlite_fsal_obj_handle)));
 	dmlite_priv_obj->obj_handle.type = posix2fsal_type(dmlite_stat->stat.st_mode);
 	dmlite_priv_obj->obj_handle.export = exp_hdl;
 	dmlite_priv_obj->obj_handle.attributes.mask
@@ -114,13 +112,64 @@ errout:
  * deprecated NULL parent && NULL path implies root handle
  */
 
-static fsal_status_t lookup(struct fsal_obj_handle *parent,
+static fsal_status_t lookup(struct fsal_obj_handle *parent_public_handle,
 							const char *path,
-							struct fsal_obj_handle **handle)
+							struct fsal_obj_handle **out_public_handle)
 {
-	LogFullDebug(COMPONENT_FSAL, "lookup: start");
+	int retval = 0;
+	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
+	struct dmlite_fsal_obj_handle *dmlite_parent_priv_handle;
+	struct dmlite_fsal_obj_handle *dmlite_priv_handle;
+	struct dmlite_context *dmlite_context_obj;
+	struct dmlite_xstat dmlite_xstat_obj;
+	
+	LogFullDebug(COMPONENT_FSAL, "lookup: start :: %s", path);
+	
+	/* Fetch the private handler of the parent */
+	dmlite_parent_priv_handle = container_of(parent_public_handle, 
+		struct dmlite_fsal_obj_handle, obj_handle);
+	
+	/* Get a dmlite_context object */
+	dmlite_context_obj = dmlite_get_context(parent_public_handle->export);
+	if (dmlite_context_obj == NULL) {
+		LogMajor(COMPONENT_FSAL, "lookup: failed to create context");
+		fsal_error = ERR_FSAL_FAULT;
+		goto errout;
+	}
+	
+	/* Fetch the stat information for the request path */
+	memset(&dmlite_xstat_obj, 0, sizeof(struct dmlite_xstat));
+	retval = dmlite_istatx_by_name(dmlite_context_obj, 
+		dmlite_parent_priv_handle->dmlite.ino, path, &dmlite_xstat_obj);
+	if (retval != 0) {
+		LogMajor(COMPONENT_FSAL, "lookup: failed to lookup :: %s", 
+					dmlite_error(dmlite_context_obj));
+		fsal_error = ERR_FSAL_FAULT;
+		goto errout;
+	}
+
+	/* Allocate a handle object and fill it up with the stat info */
+	dmlite_priv_handle = allocate_handle(&dmlite_xstat_obj, parent_public_handle->export);
+	if(dmlite_priv_handle == NULL) {
+		fsal_error = ERR_FSAL_NOMEM;
+		LogMajor(COMPONENT_FSAL, "lookup: failed to allocate handle");
+		*out_public_handle = NULL; /* poison it */
+		goto errout;
+	}
+
+	/* And return too... */
+	(*out_public_handle) = &(dmlite_priv_handle->obj_handle);
+
+	/* And we're done... do the final cleanup and return */
+	if (dmlite_context_obj != NULL)
+		dmlite_context_free(dmlite_context_obj);
 
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
+
+errout:
+	if (dmlite_context_obj != NULL)
+		dmlite_context_free(dmlite_context_obj);
+	return fsalstat(fsal_error, retval);
 }
 
 /* create
@@ -518,6 +567,7 @@ static fsal_status_t read_dirents(struct fsal_obj_handle *dir_public_handle,
                                   )
 {
 	int retval = 0;
+	int nread = 0;
 	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
 	struct dmlite_fsal_obj_handle *dmlite_dir_priv_handle;
 	struct dmlite_context *dmlite_context_obj;
@@ -536,6 +586,14 @@ static fsal_status_t read_dirents(struct fsal_obj_handle *dir_public_handle,
 	dmlite_dir_priv_handle = container_of(dir_public_handle, 
 		struct dmlite_fsal_obj_handle, obj_handle);
 
+	/* Get a dmlite_context object */
+	dmlite_context_obj = dmlite_get_context(dir_public_handle->export);
+	if (dmlite_context_obj == NULL) {
+		LogMajor(COMPONENT_FSAL, "read_dirents: failed to create context");
+		fsal_error = ERR_FSAL_FAULT;
+		goto errout;
+	}
+
 	/* Open the directory */
 	dir_fd = dmlite_iopendir(dmlite_context_obj, dmlite_dir_priv_handle->dmlite.ino);
 	if (dir_fd == NULL) {
@@ -551,6 +609,7 @@ static fsal_status_t read_dirents(struct fsal_obj_handle *dir_public_handle,
 	dir_entry_xstat = dmlite_ireaddirx(dmlite_context_obj, dir_fd);
 	// TODO: we need to handle eventual errors here
 	while (dir_entry_xstat != NULL) {
+		++nread;
 		//TODO: at least we need to handle the cookie here
 		
 		/* Callback to caller */
@@ -570,12 +629,13 @@ static fsal_status_t read_dirents(struct fsal_obj_handle *dir_public_handle,
 		goto errout;
 	}
 
+	*eof = TRUE;	
 errout:
 	/* And we're done... do the final cleanup and return */
 	if (dmlite_context_obj != NULL)
 		dmlite_context_free(dmlite_context_obj);
 		
-	return fsalstat(ERR_FSAL_NO_ERROR, 0);
+	return fsalstat(fsal_error, 0);
 }
 
 /**
@@ -947,10 +1007,10 @@ static fsal_status_t handle_digest(struct fsal_obj_handle *public_handle,
 	case FSAL_DIGEST_NFSV2:
 	case FSAL_DIGEST_NFSV3:
 	case FSAL_DIGEST_NFSV4:
-		handle_size = sizeof(public_handle);
+		handle_size = sizeof(struct dmlite_handle);
 		if(fh_desc->len < handle_size)
 			goto errout;
-		memcpy(fh_desc->addr, public_handle, handle_size);
+		memcpy(fh_desc->addr, &dmlite_priv_handle->dmlite, handle_size);
 		break;
 	case FSAL_DIGEST_FILEID2:
 		handle_size = FSAL_DIGEST_SIZE_FILEID2;
@@ -1103,18 +1163,14 @@ fsal_status_t dmlite_lookup_path(struct fsal_export *export_handle,
 	/* Get a dmlite_context object */
 	dmlite_context_obj = dmlite_get_context(export_handle);
 	if (dmlite_context_obj == NULL) {
-		LogMajor(COMPONENT_FSAL, "file_unlink: failed to create context");
+		LogMajor(COMPONENT_FSAL, "dmlite_lookup_path: failed to create context");
 		fsal_error = ERR_FSAL_FAULT;
 		goto errout;
 	}
 	
 	/* Fetch the stat information for the request path */
 	memset(&dmlite_xstat_obj, 0, sizeof(struct dmlite_xstat));
-	if(strcmp(path, "/") == 0) { // root file handle
-		retval = dmlite_statx(dmlite_context_obj, "/", &dmlite_xstat_obj);
-	} else { // some other handle
-		retval = dmlite_statx(dmlite_context_obj, path, &dmlite_xstat_obj);
-	}
+	retval = dmlite_statx(dmlite_context_obj, path, &dmlite_xstat_obj);
 	if (retval != 0) {
 		LogMajor(COMPONENT_FSAL, "dmlite_lookup_path: failed to lookup :: %s", 
 					dmlite_error(dmlite_context_obj));
