@@ -96,6 +96,8 @@ struct dmlite_context * dmlite_get_context(struct fsal_export *export_handle) {
 	
 	/* Set user credentials 
 	 * TODO: actually use credentials, and probably move this somewhere else */
+	dmlite_creds_obj.extra = NULL;
+	dmlite_creds_obj.nfqans = 0;
 	dmlite_creds_obj.mech = "ID";
 	dmlite_creds_obj.client_name = "/C=CH/O=CERN/OU=GD/CN=Test user 1";
 	retval = dmlite_setcredentials(dmlite_context_obj, &dmlite_creds_obj);
