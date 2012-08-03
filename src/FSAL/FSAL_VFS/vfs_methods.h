@@ -38,7 +38,6 @@ struct vfs_fsal_obj_handle {
 		struct {
 			int fd;
 			fsal_openflags_t openflags;
-			uint32_t lock_status; /* != 0, locks in play */
 		} file;
 		struct {
 			unsigned char *link_content;
@@ -73,8 +72,8 @@ fsal_status_t vfs_commit(struct fsal_obj_handle *obj_hdl, /* sync */
 fsal_status_t vfs_lock_op(struct fsal_obj_handle *obj_hdl,
 			  void * p_owner,
 			  fsal_lock_op_t lock_op,
-			  fsal_lock_param_t   request_lock,
-			  fsal_lock_param_t * conflicting_lock);
+			  fsal_lock_param_t *request_lock,
+			  fsal_lock_param_t *conflicting_lock);
 fsal_status_t vfs_share_op(struct fsal_obj_handle *obj_hdl,
 			   void *p_owner,         /* IN (opaque to FSAL) */
 			   fsal_share_param_t  request_share);

@@ -314,27 +314,14 @@ cache_entry_t *nfs_FhandleToCache(u_long rq_vers,
  * @param pattr      [OUT] NFSv3 PostOp structure attributes.
  *
  */
-int nfs_SetPostOpAttr(exportlist_t *pexport,
-                      const struct attrlist *pfsal_attr,
-                      post_op_attr *presult)
+void nfs_SetPostOpAttr(exportlist_t *pexport,
+                       const struct attrlist *pfsal_attr,
+                       post_op_attr *presult)
 {
-  if(pfsal_attr == NULL)
-    {
-      presult->attributes_follow
+  presult->attributes_follow
            = nfs3_FSALattr_To_Fattr(pexport,
                                     pfsal_attr,
                                     &(presult->post_op_attr_u.attributes));
-    }
-
-  if(nfs3_FSALattr_To_Fattr(pexport,
-                            pfsal_attr,
-                            &(presult->post_op_attr_u.attributes))
-     == 0)
-    presult->attributes_follow = FALSE;
-  else
-    presult->attributes_follow = TRUE;
-
-  return 0;
 } /* nfs_SetPostOpAttr */
 
 /**
@@ -1080,6 +1067,7 @@ int nfs4_FSALattr_To_Fattr(exportlist_t *pexport,
               file_type = htonl(NF4FIFO);       /* Special File - fifo */
               break;
 
+	    case NO_FILE_TYPE:
             case FS_JUNCTION:
               /* For wanting of a better solution */
               file_type = 0;
@@ -1912,6 +1900,7 @@ int nfs2_FSALattr_To_Fattr(exportlist_t *pexport,
       /** @todo mode mask ? */
       break;
 
+    case NO_FILE_TYPE:
     case EXTENDED_ATTR:
     case FS_JUNCTION:
       pFattr->type = NFBAD;
@@ -4352,7 +4341,7 @@ nfs4_sanity_check_FH(compound_data_t *data,
         }
 
         /* Check for the correct file type */
-        if (required_type) {
+        if (required_type != NO_FILE_TYPE) {
                 if (data->current_filetype != required_type) {
                         LogDebug(COMPONENT_NFSPROTO,
                                  "Wrong file type");
@@ -4361,7 +4350,7 @@ nfs4_sanity_check_FH(compound_data_t *data,
                                 return NFS4ERR_NOTDIR;
                         }
                         else if(required_type == SYMBOLIC_LINK) {
-                                        return NFS4ERR_INVAL;
+                                return NFS4ERR_INVAL;
                         }
 
                         switch (data->current_filetype) {

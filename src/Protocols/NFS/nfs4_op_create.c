@@ -90,7 +90,7 @@ int nfs4_op_create(struct nfs_argop4 *op,
   char                   *name = NULL;
   char                   *link_content = NULL;
 #ifdef _USE_QUOTA
-  struct fsal_export    *exp_hdl = data->current_entry->obj_handle->export;
+  struct fsal_export    *exp_hdl;
   fsal_status_t          fsal_status;
 #endif
   cache_inode_create_arg_t create_arg;
@@ -101,13 +101,14 @@ int nfs4_op_create(struct nfs_argop4 *op,
   res_CREATE4.status = NFS4_OK;
 
   /* Do basic checks on a filehandle */
-  res_CREATE4.status = nfs4_sanity_check_FH(data, 0LL);
+  res_CREATE4.status = nfs4_sanity_check_FH(data, NO_FILE_TYPE);
   if(res_CREATE4.status != NFS4_OK)
     goto out;
 
 #ifdef _USE_QUOTA
   /* if quota support is active, then we should check is the FSAL allows
    * inode creation or not */
+  exp_hdl = data->pexport->export_hdl;
   fsal_status = exp_hdl->ops->check_quota(exp_hdl,
 					  data->pexport->fullpath,
 					  FSAL_QUOTA_INODES,

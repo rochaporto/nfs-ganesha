@@ -409,6 +409,10 @@ nfs_tcb_t gccb;
 pthread_t _9p_dispatcher_thrid;
 #endif
 
+#ifdef _USE_9P_RDMA
+pthread_t _9p_rdma_dispatcher_thrid ;
+#endif
+
 #ifdef _USE_UPCALL_SIMULATOR
 pthread_t upcall_simulator_thrid;
 #endif
@@ -549,16 +553,6 @@ void nfs_print_param_config()
   printf("NFS_Worker_Param\n{\n");
   printf("}\n\n");
 }                               /* nfs_print_param_config */
-
-/**
- * nfs_set_param_default:
- * Set p_nfs_param structure to default parameters.
- */
-void nfs_set_param_default()
-{
-/** @TODO now that this is a noop, kill it post rebase
- */
-}                               /* nfs_set_param_default */
 
 /**
  * nfs_set_param_from_conf:
@@ -1142,16 +1136,30 @@ static void nfs_Start_threads(void)
   nfs_rpc_dispatch_threads(&attr_thr);
 
 #ifdef _USE_9P
-  /* Starting the 9p dispatcher thread */
+  /* Starting the 9P/TCP dispatcher thread */
   if((rc = pthread_create(&_9p_dispatcher_thrid, &attr_thr,
                           _9p_dispatcher_thread, NULL ) ) != 0 )
     {
       LogFatal(COMPONENT_THREAD,
-               "Could not create  9p dispatcher_thread, error = %d (%s)",
+               "Could not create  9P/TCP dispatcher, error = %d (%s)",
                errno, strerror(errno));
     }
-  LogEvent(COMPONENT_THREAD, "9p dispatcher thread was started successfully");
+  LogEvent(COMPONENT_THREAD, "9P/TCP dispatcher thread was started successfully");
 #endif
+
+#ifdef _USE_9P_RDMA
+  /* Starting the 9P/RDMA dispatcher thread */
+  if((rc = pthread_create(&_9p_rdma_dispatcher_thrid, &attr_thr,
+                          _9p_rdma_dispatcher_thread, NULL ) ) != 0 )
+    {
+      LogFatal(COMPONENT_THREAD,
+               "Could not create  9P/RDMA dispatcher, error = %d (%s)",
+               errno, strerror(errno));
+    }
+  LogEvent(COMPONENT_THREAD, "9P/RDMA dispatcher thread was started successfully");
+#endif
+
+
 
 #ifdef USE_DBUS
       /* DBUS event thread */
@@ -1666,17 +1674,6 @@ static void nfs_Init(const nfs_start_info_t * p_start_info)
   LogInfo(COMPONENT_INIT,
           "Cache Inode root entries successfully created");
 
-  /* Set accesscheck_support value to FSAL context object. */
-#ifdef _USE_NFS4_ACL
-  if (nfs_param.pexportlist)
-    {
-      nfs_param.pexportlist->FS_export_context
-           .fe_static_fs_info->accesscheck_support
-           = !cache_inode_params.use_test_access;
-      LogDebug(COMPONENT_INIT, "accesscheck_support is set to %d",
-           nfs_param.pexportlist->FS_export_context.fe_static_fs_info->accesscheck_support);
-    }
-#endif
 
      /* callback dispatch */
      nfs_rpc_cb_pkginit();

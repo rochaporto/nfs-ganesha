@@ -82,11 +82,29 @@ TIRPC_LIB = @TIRPCPATH@/src/libntirpc.la
 TIRPC_STATIC_LIB = @TIRPCPATH@/src/.libs/libntirpc.a
 
 if USE_9P
-DISPATCH_9P_FILES = 9p_dispatcher.c 
 _9P_LIB = ../Protocols/9P/lib9p.la
+if USE_9P_RDMA
+DISPATCH_9P_FILES = 9p_dispatcher.c      \
+                    9p_rdma_dispatcher.c \
+                    9p_rdma_callbacks.c
+else
+DISPATCH_9P_FILES = 9p_dispatcher.c 
+endif # USE_9P_RDMA
 else
 DISPATCH_9P_FILES = 
 _9P_LIB = 
+endif # USE_9P
+
+if USE_9P_RDMA
+_9P_RDMA_LDADD = -lmsk -lrdmacm -libverbs
+else
+_9P_RDMA_LDADD = 
+endif
+
+if USE_9P_RDMA
+_9P_RDMA_LDADD = -lmsk -lrdmacm -libverbs
+else
+_9P_RDMA_LDADD = 
 endif
 
 if USE_FSAL_FUSE
@@ -200,8 +218,9 @@ if USE_FSAL_FUSE
 libganeshaNFS_la_SOURCES = fuse_binding.c $(libMainServices_la_SOURCES)
 
 libganeshaNFS_la_LIBADD = $(libMainServices_la_LIBADD) \
-                          $(FSAL_LDFLAGS) \
-                          $(EXT_LDADD) \
+                          $(FSAL_LDFLAGS)              \
+                          $(EXT_LDADD)                 \
+                          $(_9P_RDMA_LDADD)            \
                           $(SEC_LIB_FLAGS)
 
 libganeshaNFS_la_DEPENDENCIES = fuse_binding.c $(libMainServices_la_SOURCES) $(libMainServices_la_LIBADD)

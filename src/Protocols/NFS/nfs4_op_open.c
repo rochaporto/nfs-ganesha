@@ -757,7 +757,7 @@ int nfs4_op_open(struct nfs_argop4 *op,
         res_OPEN4->OPEN4res_u.resok4.rflags = 0 ;
 
         /* Do basic checks on a filehandle */
-        res_OPEN4->status = nfs4_sanity_check_FH(data, 0LL);
+        res_OPEN4->status = nfs4_sanity_check_FH(data, NO_FILE_TYPE);
         if (res_OPEN4->status != NFS4_OK) {
                 return res_OPEN4->status;
         }
@@ -881,9 +881,9 @@ int nfs4_op_open(struct nfs_argop4 *op,
 
         /* Set the current entry to the file to be opened */
         switch (claim) {
-                cache_entry_t *entry = NULL;
-
         case CLAIM_NULL:
+                {
+                cache_entry_t *entry = NULL;
                 res_OPEN4->status
                         = open4_claim_null(arg_OPEN4,
                                            data,
@@ -895,6 +895,7 @@ int nfs4_op_open(struct nfs_argop4 *op,
                         cache_inode_put(data->current_entry);
                         data->current_entry = NULL;
                         res_OPEN4->status = open4_create_fh(data, entry);
+                }
                 }
                 break;
 
@@ -919,11 +920,12 @@ int nfs4_op_open(struct nfs_argop4 *op,
         if (data->current_entry->type != REGULAR_FILE) {
                 if (data->current_entry->type == DIRECTORY) {
                         res_OPEN4->status = NFS4ERR_ISDIR;
-                        goto out;
-                } else {
+                } else if (data->current_entry->type == SYMBOLIC_LINK){
                         res_OPEN4->status = NFS4ERR_SYMLINK;
-                        goto out;
+                } else {
+                        res_OPEN4->status = NFS4ERR_INVAL;
                 }
+		goto out;
         }
 
         /* Set the openflags variable */

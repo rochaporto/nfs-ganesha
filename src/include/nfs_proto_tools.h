@@ -88,7 +88,7 @@ void nfs_SetWccData(exportlist_t * pexport,
                     const struct attrlist *pbefore_attr,
                     const struct attrlist *pafter_attr, wcc_data * pwcc_data);
 
-int nfs_SetPostOpAttr(exportlist_t * pexport,
+void nfs_SetPostOpAttr(exportlist_t * pexport,
                       const struct attrlist *pfsal_attr,
                       post_op_attr * presult);
 
@@ -142,4 +142,18 @@ fsal_boolean_t nfs4_pnfs_supported(const exportlist_t *export);
 #endif /* _PNFS_MDS */
 nfsstat4 nfs4_sanity_check_FH(compound_data_t *data,
                               object_file_type_t required_type);
+
+static inline char *
+nfs4_utf8string2dynamic(const utf8string *input)
+{
+        char *name = gsh_malloc(input->utf8string_len + 1);
+        if (name != NULL) {
+                memcpy(name,
+                       input->utf8string_val,
+                       input->utf8string_len);
+                name[input->utf8string_len] = '\0';
+        }
+        return name;
+}
+
 #endif                          /* _NFS_PROTO_TOOLS_H */

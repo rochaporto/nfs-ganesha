@@ -35,6 +35,22 @@
 #include "fsal.h"
 #include "cache_inode.h"
 
+#ifdef _USE_9P_RDMA
+#include <infiniband/arch.h>
+#include <rdma/rdma_cma.h>
+#include "trans_rdma.h"
+
+typedef struct _9p_datamr
+{
+  msk_data_t *data;
+  struct ibv_mr *mr;
+  msk_data_t *ackdata;
+  pthread_mutex_t *lock;
+  pthread_cond_t *cond;
+} _9p_datamr_t ;
+
+#endif
+
 typedef uint8_t   u8;
 typedef uint16_t u16;
 typedef uint32_t u32;
@@ -44,7 +60,8 @@ typedef uint64_t u64;
 #define NB_PREALLOC_FID_9P  100
 #define PRIME_9P 17 
 
-#define _9P_PORT 564
+#define _9P_TCP_PORT 564
+#define _9P_RDMA_PORT 5640 
 #define _9P_SEND_BUFFER_SIZE 131072
 #define _9P_RECV_BUFFER_SIZE 131072
 #define _9p_READ_BUFFER_SIZE _9P_SEND_BUFFER_SIZE
@@ -56,7 +73,13 @@ typedef uint64_t u64;
 #define _9P_HDR_SIZE  4
 #define _9P_TYPE_SIZE 1
 #define _9P_TAG_SIZE  2
-#define _9p_BLK_SIZE 4096
+//#define _9P_BLK_SIZE 512
+#define _9P_BLK_SIZE 4096
+#define _9P_IOUNIT   0
+
+#define _9P_RDMA_CHUNK_SIZE 8*1024
+#define _9P_RDMA_RECV_NUM 1
+#define _9P_RDMA_BACKLOG 10 
 
 /**
  * enum _9p_msg_t - 9P message types
@@ -225,7 +248,7 @@ enum _9p_qid_t {
 
 /* Room for readdir header */
 #define _9P_READDIRHDRSZ	24
-#define _9P_FID_PER_CONN        32
+#define _9P_FID_PER_CONN        1024
 
 /**
  * struct _9p_str - length prefixed string type
@@ -270,7 +293,8 @@ typedef struct _9p_qid {
 
 typedef struct _9p_param__
 {
-  unsigned short _9p_port ;
+  unsigned short _9p_tcp_port ;
+  unsigned short _9p_rdma_port ;
 } _9p_parameter_t ;
 
 typedef struct _9p_fid__
@@ -471,6 +495,14 @@ void _9p_tools_fsal_attr2stat( fsal_attrib_list_t * pfsalattr, struct stat * pst
 void _9p_tools_acess2fsal( u32 * paccessin, fsal_accessflags_t * pfsalaccess ) ;
 void _9p_openflags2FSAL( u32 * inflags, fsal_openflags_t * outflags ) ;
 void _9p_chomp_attr_value(char *str, size_t size) ;
+
+#ifdef _USE_9P_RDMA
+/* 9P/RDMA callbacks */
+void* _9p_rdma_handle_trans(void *arg) ;
+void _9p_rdma_callback_recv(msk_trans_t *trans, void *arg) ;
+void _9p_rdma_callback_disconnect(msk_trans_t *trans) ;
+void _9p_rdma_callback_send(msk_trans_t *trans, void *arg) ;
+#endif
 
 /* Protocol functions */
 int _9p_not_2000L( _9p_request_data_t * preq9p, 
