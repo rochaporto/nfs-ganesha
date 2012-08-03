@@ -84,6 +84,7 @@ libtoolize
 %configure \
 	--disable-nfsidmap \
 	--disable-fsal-proxy \
+	--disable-fsal-ceph \
 	--enable-fsal-dmlite \
 	--enable-fsal-vfs
 
