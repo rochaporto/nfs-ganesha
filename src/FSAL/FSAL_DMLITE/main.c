@@ -44,9 +44,13 @@
 #include "dmlite_methods.h"
 #include "FSAL/fsal_init.h"
 
-/* DMLITE FSAL module private storage
- */
+const char myname[] = "DMLITE";
 
+/* 
+ * Private fsal_module struct for DMLITE.
+ * 
+ * We can use this to add private fields to be shared among handle, export, ...
+ */
 struct dmlite_fsal_module {	
 	struct fsal_module fsal;
 	struct fsal_staticfsinfo_t fs_info;
@@ -54,9 +58,10 @@ struct dmlite_fsal_module {
 	 /* dmlitefs_specific_initinfo_t specific_info;  placeholder */
 };
 
-const char myname[] = "DMLITE";
 
-/* filesystem info for DMLITE */
+/* 
+ * Filesystem information for DMLITE.
+ */
 static struct fsal_staticfsinfo_t default_posix_info = {
 	.maxfilesize = 0xFFFFFFFFFFFFFFFFLL, /* (64bits) */
 	.maxlink = _POSIX_LINK_MAX,
@@ -69,7 +74,7 @@ static struct fsal_staticfsinfo_t default_posix_info = {
 	.fh_expire_type = FSAL_EXPTYPE_PERSISTENT,
 	.link_support = TRUE,
 	.symlink_support = TRUE,
-	.lock_support = TRUE,
+	.lock_support = FALSE,
 	.lock_support_owner = FALSE,
 	.lock_support_async_block = FALSE,
 	.named_attr = TRUE,
@@ -87,47 +92,56 @@ static struct fsal_staticfsinfo_t default_posix_info = {
 	.dirs_have_sticky_bit = TRUE
 };
 
-/* private helper for export object
+/*
+ * Methods to be called from other DMLITE objects (like handle)
  */
-
-struct fsal_staticfsinfo_t *dmlite_staticinfo(struct fsal_module *hdl)
+struct fsal_staticfsinfo_t *dmlite_staticinfo(struct fsal_module *public_handle)
 {
-	struct dmlite_fsal_module *myself;
+	struct dmlite_fsal_module *dmlite_priv_module;
 
-	myself = container_of(hdl, struct dmlite_fsal_module, fsal);
-	return &myself->fs_info;
+	dmlite_priv_module = container_of(public_handle, struct dmlite_fsal_module, fsal);
+	
+	return &dmlite_priv_module->fs_info;
 }
 
-/* Module methods
+/* 
+ * Module methods.
  */
 
-/* init_config
- * must be called with a reference taken (via lookup_fsal)
+/* 
+ * init_config
+ * 
+ * Loads the DMLITE specific configuration.
  */
 
-static fsal_status_t init_config(struct fsal_module *fsal_hdl,
-				 config_file_t config_struct)
+static fsal_status_t init_config(struct fsal_module *public_module,
+								 config_file_t config_struct)
 {
-	struct dmlite_fsal_module *dmlite_me
-		= container_of(fsal_hdl, struct dmlite_fsal_module, fsal);
 	fsal_status_t fsal_status;
+	struct dmlite_fsal_module *dmlite_priv_module;
+	
+	LogFullDebug(COMPONENT_FSAL, "init_config: start");
+	
+	/* Fetch the private module object (from the public handle). */	
+	dmlite_priv_module = container_of(public_module, struct dmlite_fsal_module, fsal);
 
-	dmlite_me->fs_info = default_posix_info; /* get a copy of the defaults */
+	/* Start by setting the defaults */
+	dmlite_priv_module->fs_info = default_posix_info;
 
-        fsal_status = fsal_load_config(fsal_hdl->ops->get_name(fsal_hdl),
-                                       config_struct,
-                                       &dmlite_me->fsal_info,
-                                       &dmlite_me->fs_info,
-                                       NULL);
+	/* Load our specific configuration values */
+    fsal_status = fsal_load_config(public_module->ops->get_name(public_module),
+		config_struct, &dmlite_priv_module->fsal_info, 
+		&dmlite_priv_module->fs_info, NULL);
 
 	if(FSAL_IS_ERROR(fsal_status))
 		return fsal_status;
-	/* if we have fsal specific params, do them here
-	 * fsal_hdl->name is used to find the block containing the
-	 * params.
-	 */
+	
+	/* In here we should set any additional DMLITE specific parameters */
+	// TODO: do we have any? now with dmlite all is in dmlite.conf
 
-	display_fsinfo(&dmlite_me->fs_info);
+	/* Output the current configuration */
+	display_fsinfo(&dmlite_priv_module->fs_info);
+	
 	LogFullDebug(COMPONENT_FSAL,
 		     "Supported attributes constant = 0x%"PRIx64,
                      (uint64_t) DMLITE_SUPPORTED_ATTRIBUTES);
@@ -136,11 +150,13 @@ static fsal_status_t init_config(struct fsal_module *fsal_hdl,
 		     default_posix_info.supported_attrs);
 	LogDebug(COMPONENT_FSAL,
 		 "FSAL INIT: Supported attributes mask = 0x%"PRIx64,
-		 dmlite_me->fs_info.supported_attrs);
+		 dmlite_priv_module->fs_info.supported_attrs);
+		 
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 }
 
-/* Internal DMLITE method linkage to export object
+/* 
+ * Internal DMLITE method linkage to export object
  */
 
 fsal_status_t dmlite_create_export(struct fsal_module *fsal_hdl,
@@ -150,17 +166,20 @@ fsal_status_t dmlite_create_export(struct fsal_module *fsal_hdl,
 				struct fsal_module *next_fsal,
 				struct fsal_export **export);
 
-/* Module initialization.
- * Called by dlopen() to register the module
- * keep a private pointer to me in myself
+/* 
+ * Module initialization.
+ * 
+ * Used by dlopen on start.
  */
 
-/* my module private storage
+/* 
+ * Private storage.
  */
 
 static struct dmlite_fsal_module DMLITE;
 
-/* linkage to the exports and handle ops initializers
+/* 
+ * Linkage to the exports and handle ops initializers
  */
 
 void dmlite_export_ops_init(struct export_ops *ops);

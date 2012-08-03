@@ -51,10 +51,10 @@
 #include <dmlite/c/dmlite.h>
 
 /* 
-  * DMLITE internal export (FSAL internal private fields).
-  *
-  * These are fields that other objects (like handle) will need.
-  */
+ * DMLITE internal export (FSAL internal private fields).
+ *
+ * These are fields that other objects (like handle) will need.
+ */
 
 struct dmlite_fsal_export {
 	struct fsal_export export;

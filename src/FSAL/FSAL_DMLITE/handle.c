@@ -65,6 +65,7 @@ static struct dmlite_fsal_obj_handle *allocate_handle(struct dmlite_xstat *dmlit
 
 	LogFullDebug(COMPONENT_FSAL, "allocate_handle: start");
 	
+	/* Malloc to keep it for later */
 	dmlite_priv_obj = malloc(sizeof(struct dmlite_fsal_obj_handle));
 	if (dmlite_priv_obj == NULL)
 		return NULL;
@@ -74,14 +75,12 @@ static struct dmlite_fsal_obj_handle *allocate_handle(struct dmlite_xstat *dmlit
 	if(dmlite_priv_obj->obj_handle.type == REGULAR_FILE) {
 		dmlite_priv_obj->u.file.fd = -1;  /* no open on this yet */
 		dmlite_priv_obj->u.file.openflags = FSAL_O_CLOSED;
-		dmlite_priv_obj->u.file.lock_status = 0;
 	}
 	
 	/* Then set the dmlite specific (also private) properties */
 	dmlite_priv_obj->dmlite.ino = dmlite_stat->stat.st_ino;
-	//strncpy(dmlite_priv_obj->dmlite.name, dmlite_stat->name, NAME_MAX);
 
-	/* Finally set public pointer (obj_handle from fsal_api.h) properties */
+	/* Set public pointer (obj_handle from fsal_api.h) properties */
 	dmlite_priv_obj->obj_handle.type = posix2fsal_type(dmlite_stat->stat.st_mode);
 	dmlite_priv_obj->obj_handle.export = exp_hdl;
 	dmlite_priv_obj->obj_handle.attributes.mask
@@ -302,7 +301,8 @@ static fsal_status_t makedir(struct fsal_obj_handle *parent_public_handle,
 	
 	/* Go ahead and create the catalog entry */
 	dmlite_xstat_obj.parent = dmlite_parent_priv_handle->dmlite.ino;
-	dmlite_xstat_obj.stat.st_mode = dir_attrs->mode;
+	dmlite_xstat_obj.stat.st_mode = fsal2unix_mode(dir_attrs->mode)
+		& ~parent_public_handle->export->ops->fs_umask(parent_public_handle->export);
 	dmlite_xstat_obj.stat.st_uid = dir_attrs->owner;
 	dmlite_xstat_obj.stat.st_gid = dir_attrs->group;
 	strncpy(dmlite_xstat_obj.name, dir_name, NAME_MAX); 
@@ -320,7 +320,7 @@ static fsal_status_t makedir(struct fsal_obj_handle *parent_public_handle,
 		dmlite_parent_priv_handle->dmlite.ino, dir_name, &dmlite_xstat_obj);
 	if (retval != 0) {
 		retval = dmlite_errno(dmlite_context_obj);
-		LogMajor(COMPONENT_FSAL, "create: failed to stat new directory :: %s", 
+		LogMajor(COMPONENT_FSAL, "makedir: failed to stat new directory :: %s", 
 					dmlite_error(dmlite_context_obj));
 		fsal_error = ERR_FSAL_FAULT;
 		goto errout;
@@ -330,7 +330,7 @@ static fsal_status_t makedir(struct fsal_obj_handle *parent_public_handle,
 	dmlite_dir_priv_handle = allocate_handle(&dmlite_xstat_obj, parent_public_handle->export);
 	if(dmlite_dir_priv_handle == NULL) {
 		fsal_error = ERR_FSAL_NOMEM;
-		LogMajor(COMPONENT_FSAL, "create: failed to allocate handle");
+		LogMajor(COMPONENT_FSAL, "makedir: failed to allocate handle");
 		*dir_out_public_handle = NULL;
 		goto errout;
 	}
@@ -347,8 +347,7 @@ static fsal_status_t makedir(struct fsal_obj_handle *parent_public_handle,
 errout:
 	if (dmlite_context_obj != NULL)
 		dmlite_context_free(dmlite_context_obj);
-	return fsalstat(fsal_error, retval);	
-	
+	return fsalstat(fsal_error, retval);
 }
 
 /**
@@ -1205,16 +1204,9 @@ errout:
 }
 
 /* create_handle
- * Does what original FSAL_ExpandHandle did (sort of)
- * returns a ref counted handle to be later used in cache_inode etc.
- * NOTE! you must release this thing when done with it!
- * BEWARE! Thanks to some holes in the *AT syscalls implementation,
- * we cannot get an fd on an AF_UNIX socket.  Sorry, it just doesn't...
- * we could if we had the handle of the dir it is in, but this method
- * is for getting handles off the wire for cache entries that have LRU'd.
- * Ideas and/or clever hacks are welcome...
+ * 
+ * Expands a handle from the given buffer into the usual objects.
  */
-
 fsal_status_t dmlite_create_handle(struct fsal_export *export_handle,
 								   struct gsh_buffdesc *hdl_desc,
 								   struct fsal_obj_handle **out_handle)

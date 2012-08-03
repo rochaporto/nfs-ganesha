@@ -43,325 +43,256 @@
 #include <fcntl.h>
 #include "dmlite_methods.h"
 #include "FSAL/fsal_commonlib.h"
-#include "FSAL/FSAL_DMLITE/fsal_handle_syscalls.h"
 
-/** dmlite_open
- * called with appropriate locks taken at the cache inode level
+/** 
+ * dmlite_open
+ * 
+ * Called with appropriate locks taken at the cache inode level.
  */
-
-fsal_status_t dmlite_open(struct fsal_obj_handle *obj_hdl,
-		       fsal_openflags_t openflags)
+fsal_status_t dmlite_open(struct fsal_obj_handle *public_handle,
+		       			  fsal_openflags_t openflags)
 {
-	struct dmlite_fsal_obj_handle *myself;
-	int fd, mntfd;
-	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
 	int retval = 0;
+	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
+	struct dmlite_context *dmlite_context_obj;
+	struct dmlite_fsal_obj_handle *dmlite_priv_handle;
+	struct dmlite_fd *fd;
+	
+	LogFullDebug(COMPONENT_FSAL, "dmlite_open: start");
+	
+	/* Fetch the private handler for the given file (from the public obj_handle) */
+	dmlite_priv_handle = container_of(public_handle, 
+		struct dmlite_fsal_obj_handle, obj_handle);
 
-	myself = container_of(obj_hdl, struct dmlite_fsal_obj_handle, obj_handle);
+	/* Get a dmlite_context object */
+	dmlite_context_obj = dmlite_get_context(public_handle->export);
+	if (dmlite_context_obj == NULL) {
+		LogMajor(COMPONENT_FSAL, "dmlite_open: failed to create context");
+		fsal_error = ERR_FSAL_FAULT;
+		goto errout;
+	}
+	
+	assert(dmlite_priv_handle->u.file.fd == -1 
+		&& dmlite_priv_handle->u.file.openflags == FSAL_O_CLOSED);
 
-	assert(myself->u.file.fd == -1
-	       && myself->u.file.openflags == FSAL_O_CLOSED);
-
-	mntfd = dmlite_get_root_fd(obj_hdl->export);
-	fd = open_by_handle_at(mntfd, myself->handle, (O_RDWR));
+	// TODO: do a dmlite_get here (using the file inode)
+	
 	if(fd < 0) {
 		fsal_error = posix2fsal_error(errno);
 		retval = errno;
-		goto out;
+		goto errout;
 	}
-	myself->u.file.fd = fd;
-	myself->u.file.openflags = openflags;
-	myself->u.file.lock_status = 0; /* no locks on new files */
+	dmlite_priv_handle->u.file.fd = fd;
+	dmlite_priv_handle->u.file.openflags = openflags;
+	dmlite_priv_handle->u.file.lock_status = 0; /* no locks on new files */
 
-out:
+errout:
+	/* And we're done... do the final cleanup and return */
+	if (dmlite_context_obj != NULL)
+		dmlite_context_free(dmlite_context_obj);
+		
 	return fsalstat(fsal_error, retval);	
 }
 
-/* dmlite_status
+/* 
+ * dmlite_status
+ * 
  * Let the caller peek into the file's open/close state.
  */
 
-fsal_openflags_t dmlite_status(struct fsal_obj_handle *obj_hdl)
+fsal_openflags_t dmlite_status(struct fsal_obj_handle *public_handle)
 {
-	struct dmlite_fsal_obj_handle *myself;
+	struct dmlite_fsal_obj_handle *dmlite_priv_handle;
 
-	myself = container_of(obj_hdl, struct dmlite_fsal_obj_handle, obj_handle);
-	return myself->u.file.openflags;
+	dmlite_priv_handle = container_of(public_handle, struct dmlite_fsal_obj_handle, obj_handle);
+	
+	return dmlite_priv_handle->u.file.openflags;
 }
 
-/* dmlite_read
- * concurrency (locks) is managed in cache_inode_*
+/* 
+ * dmlite_read
+ * 
+ * Concurrency (locks) is managed in cache_inode_*.
  */
-
-fsal_status_t dmlite_read(struct fsal_obj_handle *obj_hdl,
-		       uint64_t offset,
-                       size_t buffer_size,
-                       void *buffer,
-		       size_t *read_amount,
-		       bool_t *end_of_file)
+fsal_status_t dmlite_read(struct fsal_obj_handle *public_handle,
+		       			  uint64_t offset,
+                       	  size_t buffer_size,
+                       	  void *buffer,
+		       			  size_t *read_amount,
+		       			  bool_t *end_of_file)
 {
-	struct dmlite_fsal_obj_handle *myself;
-	ssize_t nb_read;
-	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
 	int retval = 0;
+	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
+	struct dmlite_fsal_obj_handle *dmlite_priv_handle;
+	ssize_t nb_read;
 
-	myself = container_of(obj_hdl, struct dmlite_fsal_obj_handle, obj_handle);
+	/* Fetch the private handler for the given file (from the public obj_handle) */
+	dmlite_priv_handle = container_of(public_handle, struct dmlite_fsal_obj_handle, obj_handle);
 
-	assert(myself->u.file.fd >= 0 && myself->u.file.openflags != FSAL_O_CLOSED);
+	assert(dmlite_priv_handle->u.file.fd >= 0 
+		&& dmlite_priv_handle->u.file.openflags != FSAL_O_CLOSED);
 
-        nb_read = pread(myself->u.file.fd,
-                        buffer,
-                        buffer_size,
-                        offset);
+	// TODO: do the actual read here
+	//nb_read = pread(myself->u.file.fd, buffer, buffer_size, offset);
 
-        if(offset == -1 || nb_read == -1) {
-                retval = errno;
-                fsal_error = posix2fsal_error(retval);
-                goto out;
-        }
-        *end_of_file = nb_read == 0 ? TRUE : FALSE;
-        *read_amount = nb_read;
-out:
+	/* Check for errors */
+	if(offset == -1 || nb_read == -1) {
+		retval = errno;
+		fsal_error = posix2fsal_error(retval);
+		goto errout;
+	}
+	
+	/* And we're done ... */
+	*end_of_file = nb_read == 0 ? TRUE : FALSE;
+	*read_amount = nb_read;
+	
+errout:		
 	return fsalstat(fsal_error, retval);	
 }
 
-/* dmlite_write
- * concurrency (locks) is managed in cache_inode_*
+/* 
+ * dmlite_write
+ * 
+ * Concurrency (locks) is managed in cache_inode_*.
  */
-
-fsal_status_t dmlite_write(struct fsal_obj_handle *obj_hdl,
-			uint64_t offset,
-			size_t buffer_size,
-			void *buffer,
-			size_t *write_amount)
+fsal_status_t dmlite_write(struct fsal_obj_handle *public_handle,
+						   uint64_t offset,
+						   size_t buffer_size,
+						   void *buffer,
+						   size_t *write_amount)
 {
-	struct dmlite_fsal_obj_handle *myself;
-	ssize_t nb_written;
-	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
 	int retval = 0;
+	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
+	struct dmlite_fsal_obj_handle *dmlite_priv_handle;
+	ssize_t nb_written;
 
-	myself = container_of(obj_hdl, struct dmlite_fsal_obj_handle, obj_handle);
+	/* Fetch the private handler for the given file (from the public obj_handle) */
+	dmlite_priv_handle = container_of(public_handle, struct dmlite_fsal_obj_handle, obj_handle);
 
-	assert(myself->u.file.fd >= 0 && myself->u.file.openflags != FSAL_O_CLOSED);
+	assert(dmlite_priv_handle->u.file.fd >= 0 
+		&& dmlite_priv_handle->u.file.openflags != FSAL_O_CLOSED);
 
-        nb_written = pwrite(myself->u.file.fd,
-                            buffer,
-                            buffer_size,
-                            offset);
+	// TODO: do the actual write here
+	//nb_written = pwrite(dmlite_priv_handle->u.file.fd, buffer, buffer_size, offset);
 
+	/* Check for errors */
 	if(offset == -1 || nb_written == -1) {
 		retval = errno;
 		fsal_error = posix2fsal_error(retval);
-		goto out;
+		goto errout;
 	}
+	
+	/* And we're done ... */
 	*write_amount = nb_written;
-out:
+	
+errout:		
 	return fsalstat(fsal_error, retval);	
 }
 
-/* dmlite_commit
- * Commit a file range to storage.
- * for right now, fsync will have to do.
+/* 
+ * dmlite_commit
+ * 
+ * Commit a file range to storage. For right now, fsync will have to do.
  */
-
-fsal_status_t dmlite_commit(struct fsal_obj_handle *obj_hdl, /* sync */
-			 off_t offset,
-			 size_t len)
+fsal_status_t dmlite_commit(struct fsal_obj_handle *public_handle,
+			 				off_t offset,
+			 				size_t len)
 {
-	struct dmlite_fsal_obj_handle *myself;
-	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
 	int retval = 0;
+	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
+	struct dmlite_fsal_obj_handle *dmlite_priv_handle;
+	
+	/* Fetch the private handler for the given file (from the public obj_handle) */
+	dmlite_priv_handle = container_of(public_handle, struct dmlite_fsal_obj_handle, obj_handle);
 
-	myself = container_of(obj_hdl, struct dmlite_fsal_obj_handle, obj_handle);
+	assert(dmlite_priv_handle->u.file.fd >= 0 
+		&& dmlite_priv_handle->u.file.openflags != FSAL_O_CLOSED);
 
-	assert(myself->u.file.fd >= 0 && myself->u.file.openflags != FSAL_O_CLOSED);
-
-	retval = fsync(myself->u.file.fd);
-	if(retval == -1) {
-		retval = errno;
-		fsal_error = posix2fsal_error(retval);
-	}
-	return fsalstat(fsal_error, retval);	
+	// TODO: not sure what to do here
+	
+	return fsalstat(fsal_error, retval);
 }
 
-/* dmlite_lock_op
- * lock a region of the file
- * throw an error if the fd is not open.  The old fsal didn't
- * check this.
+/* 
+ * dmlite_lock_op
+ * 
+ * We do not support this.
  */
-
-fsal_status_t dmlite_lock_op(struct fsal_obj_handle *obj_hdl,
-			  void * p_owner,
-			  fsal_lock_op_t lock_op,
-			  fsal_lock_param_t   request_lock,
-			  fsal_lock_param_t * conflicting_lock)
+fsal_status_t dmlite_lock_op(struct fsal_obj_handle *public_handle,
+			  				 void * p_owner,
+			  				 fsal_lock_op_t lock_op,
+			  				 fsal_lock_param_t   request_lock,
+			  				 fsal_lock_param_t * conflicting_lock)
 {
-	struct dmlite_fsal_obj_handle *myself;
-	struct flock lock_args;
-	int fcntl_comm;
-	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
-	int retval = 0;
-
-	myself = container_of(obj_hdl, struct dmlite_fsal_obj_handle, obj_handle);
-	if(myself->u.file.fd < 0 || myself->u.file.openflags == FSAL_O_CLOSED) {
-		LogDebug(COMPONENT_FSAL,
-			 "Attempting to lock with no file descriptor open");
-		fsal_error = ERR_FSAL_FAULT;
-		goto out;
-	}
-	if(p_owner != NULL) {
-		fsal_error = ERR_FSAL_NOTSUPP;
-		goto out;
-	}
-	if(conflicting_lock == NULL && lock_op == FSAL_OP_LOCKT) {
-		LogDebug(COMPONENT_FSAL,
-			 "conflicting_lock argument can't"
-			 " be NULL with lock_op  = LOCKT");
-		fsal_error = ERR_FSAL_FAULT;
-		goto out;
-	}
-	LogFullDebug(COMPONENT_FSAL,
-		     "Locking: op:%d type:%d start:%lu length:%lu ",
-		     lock_op,
-		     request_lock.lock_type,
-		     request_lock.lock_start,
-		     request_lock.lock_length);
-	if(lock_op == FSAL_OP_LOCKT) {
-		fcntl_comm = F_GETLK;
-	} else if(lock_op == FSAL_OP_LOCK || lock_op == FSAL_OP_UNLOCK) {
-		fcntl_comm = F_SETLK;
-	} else {
-		LogDebug(COMPONENT_FSAL,
-			 "ERROR: Lock operation requested was not TEST, READ, or WRITE.");
-		fsal_error = ERR_FSAL_NOTSUPP;
-		goto out;
-	}
-
-	if(request_lock.lock_type == FSAL_LOCK_R) {
-		lock_args.l_type = F_RDLCK;
-	} else if(request_lock.lock_type == FSAL_LOCK_W) {
-		lock_args.l_type = F_WRLCK;
-	} else {
-		LogDebug(COMPONENT_FSAL,
-			 "ERROR: The requested lock type was not read or write.");
-		fsal_error = ERR_FSAL_NOTSUPP;
-		goto out;
-	}
-
-	if(lock_op == FSAL_OP_UNLOCK)
-		lock_args.l_type = F_UNLCK;
-
-	lock_args.l_len = request_lock.lock_length;
-	lock_args.l_start = request_lock.lock_start;
-	lock_args.l_whence = SEEK_SET;
-
-	errno = 0;
-	retval = fcntl(myself->u.file.fd, fcntl_comm, &lock_args);
-	if(retval && lock_op == FSAL_OP_LOCK) {
-		retval = errno;
-		if(conflicting_lock != NULL) {
-			fcntl_comm = F_GETLK;
-			retval = fcntl(myself->u.file.fd,
-				       fcntl_comm,
-				       &lock_args);
-			if(retval) {
-				retval = errno; /* we lose the inital error */
-				LogCrit(COMPONENT_FSAL,
-					"After failing a lock request, I couldn't even"
-					" get the details of who owns the lock.");
-				fsal_error = posix2fsal_error(retval);
-				goto out;
-			}
-			if(conflicting_lock != NULL) {
-				conflicting_lock->lock_length = lock_args.l_len;
-				conflicting_lock->lock_start = lock_args.l_start;
-				conflicting_lock->lock_type = lock_args.l_type;
-			}
-		}
-		fsal_error = posix2fsal_error(retval);
-		goto out;
-	}
-
-	/* F_UNLCK is returned then the tested operation would be possible. */
-	if(conflicting_lock != NULL) {
-		if(lock_op == FSAL_OP_LOCKT && lock_args.l_type != F_UNLCK) {
-			conflicting_lock->lock_length = lock_args.l_len;
-			conflicting_lock->lock_start = lock_args.l_start;
-			conflicting_lock->lock_type = lock_args.l_type;
-		} else {
-			conflicting_lock->lock_length = 0;
-			conflicting_lock->lock_start = 0;
-			conflicting_lock->lock_type = FSAL_NO_LOCK;
-		}
-	}
-	if(lock_op == FSAL_OP_LOCK)
-		myself->u.file.lock_status++;
-	else
-		myself->u.file.lock_status--;
-out:
-	return fsalstat(fsal_error, retval);	
+	return fsalstat(ERR_FSAL_NO_ERROR, 0);	
 }
 
-/* dmlite_share_op @TODO still true?
- * do a share request.  Not supported here.
- * at least in GPFS, we get the mount dir from
- * vfs_get_root_fd and the file's fd from myself->fd.
- * the rest comes from request_share.
- */
-
-/* dmlite_close
+/* 
+ * dmlite_close
+ * 
  * Close the file if it is still open.
- * Yes, we ignor lock status.  Closing a file in POSIX
- * releases all locks.
- * TBD, do we have to clear/verify as clear locks first?
  */
 
-fsal_status_t dmlite_close(struct fsal_obj_handle *obj_hdl)
+fsal_status_t dmlite_close(struct fsal_obj_handle *public_handle)
 {
-	struct dmlite_fsal_obj_handle *myself;
-	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
 	int retval = 0;
+	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
+	struct dmlite_fsal_obj_handle *dmlite_priv_handle;
+	
+	/* Fetch the private handler for the given file (from the public obj_handle) */
+	dmlite_priv_handle = container_of(public_handle, struct dmlite_fsal_obj_handle, obj_handle);
+	
+	assert(dmlite_priv_handle->u.file.fd >= 0
+	       && dmlite_priv_handle->u.file.openflags != FSAL_O_CLOSED
+	       && !dmlite_priv_handle->u.file.lock_status);
 
-	myself = container_of(obj_hdl, struct dmlite_fsal_obj_handle, obj_handle);
-
-	assert(myself->u.file.fd >= 0
-	       && myself->u.file.openflags != FSAL_O_CLOSED
-	       && !myself->u.file.lock_status);
-
-	retval = close(myself->u.file.fd);
+	// TODO: close the file
+	
+	/* Check for errors */
 	if(retval < 0) {
 		retval = errno;
 		fsal_error = posix2fsal_error(retval);
 	}
-	myself->u.file.fd = -1;
-	myself->u.file.lock_status = 0;
-	myself->u.file.openflags = FSAL_O_CLOSED;
+	
+	/* And we're done ... reset the values in the private handle */
+	dmlite_priv_handle->u.file.fd = -1;
+	dmlite_priv_handle->u.file.lock_status = 0;
+	dmlite_priv_handle->u.file.openflags = FSAL_O_CLOSED;
+	
 	return fsalstat(fsal_error, retval);	
 }
 
-/* dmlite_lru_cleanup
- * free non-essential resources at the request of cache inode's
+/* 
+ * dmlite_lru_cleanup
+ * 
+ * Free non-essential resources at the request of cache inode's
  * LRU processing identifying this handle as stale enough for resource
  * trimming.
  */
-
-fsal_status_t dmlite_lru_cleanup(struct fsal_obj_handle *obj_hdl,
-			      lru_actions_t requests)
+fsal_status_t dmlite_lru_cleanup(struct fsal_obj_handle *public_handle,
+			      				 lru_actions_t requests)
 {
-	struct dmlite_fsal_obj_handle *myself;
-	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
 	int retval = 0;
-
-	myself = container_of(obj_hdl, struct dmlite_fsal_obj_handle, obj_handle);
-	if(myself->u.file.fd >= 0 && !(myself->u.file.lock_status)) {
-		retval = close(myself->u.file.fd);
-		myself->u.file.fd = -1;
-		myself->u.file.lock_status = 0;
-		myself->u.file.openflags = FSAL_O_CLOSED;
+	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
+	struct dmlite_fsal_obj_handle *dmlite_priv_handle;
+	
+	/* Fetch the private handler for the given file (from the public obj_handle) */
+	dmlite_priv_handle = container_of(public_handle, struct dmlite_fsal_obj_handle, obj_handle);
+	
+	if(dmlite_priv_handle->u.file.fd >= 0 && !(dmlite_priv_handle->u.file.lock_status)) {
+		// TODO: close the file as it is still open
+		
+		/* And now reset the internal values */
+		dmlite_priv_handle->u.file.fd = -1;
+		dmlite_priv_handle->u.file.lock_status = 0;
+		dmlite_priv_handle->u.file.openflags = FSAL_O_CLOSED;
 	}
+	
+	/* Check for errors */
 	if(retval == -1) {
 		retval = errno;
 		fsal_error = posix2fsal_error(retval);
 	}
+	
 	return fsalstat(fsal_error, retval);	
 }
