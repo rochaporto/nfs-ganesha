@@ -1,28 +1,26 @@
-/* DMLITE private methods for handle */
+/**
+ * In here we define private methods which need to be called from different areas.
+ * 
+ * Something like calling a method defined in export.c from handle.c or similar.
+ */
+ 
 
-/* DMLITE private methods for export */
-
-int dmlite_get_root_fd(struct fsal_export *exp_hdl);
-
-struct dmlite_manager * dmlite_get_manager(struct fsal_export *export_handle);
-
-struct dmlite_context * dmlite_get_context(struct fsal_export *export_handle);
-
-/* Method proto linkage to handle.c for export */
-
-fsal_status_t dmlite_lookup_path(struct fsal_export *exp_hdl,
-			      				 const char *path,
-			      				 struct fsal_obj_handle **handle);
-
-fsal_status_t dmlite_create_handle(struct fsal_export *exp_hdl,
-								   struct gsh_buffdesc *hdl_desc,
-								   struct fsal_obj_handle **handle);
-
+/**
+ * ===========================================
+ * Private structures required by all areas (handle, export, etc).
+ */
+ 
+/* 
+ * This is our internal information kept in the handle object. 
+ */
 struct dmlite_handle {
 	ino_t ino;
 	ino_t parent_ino;
 };
 	
+/* 
+ * Private handle structure. Includes the public handle and all our private information. 
+ */
 struct dmlite_fsal_obj_handle {
 	struct fsal_obj_handle obj_handle;
 	struct file_handle *handle; // TODO: to be removed, not used
@@ -43,7 +41,51 @@ struct dmlite_fsal_obj_handle {
 		} sock;
 	} u;
 };
+ 
+/**
+ * ===========================================
+ * Private methods defined in handle.c, to be exported.
+ */
 
+/**
+ * Performs a lookup for the given path on the given export.
+ * 
+ * It puts the resulting 'public' handle in the given object.
+ */
+fsal_status_t dmlite_lookup_path(struct fsal_export *exp_hdl,
+			      				 const char *path,
+			      				 struct fsal_obj_handle **handle);
+
+/**
+ * Not being used right now.
+ * TODO: get rid of this?
+ */
+fsal_status_t dmlite_create_handle(struct fsal_export *exp_hdl,
+								   struct gsh_buffdesc *hdl_desc,
+								   struct fsal_obj_handle **handle);
+								   
+
+/**
+ * ===========================================
+ * Private methods defined in export.c, to be exported.
+ */
+ 
+/**
+ * Returns a dmlite manager object.
+ * 
+ * It simply takes the one that has already been initialized in the given export object.
+ * 
+ * The initialization of the manager is done while creating the export.
+ */
+struct dmlite_manager * dmlite_get_manager(struct fsal_export *export_handle);
+
+/**
+ * Returns a dmlite context.
+ * 
+ * A new context is created on every call, using the manager available in the
+ * give export. It's up to the client to release the context when it's done.
+ */
+struct dmlite_context * dmlite_get_context(struct fsal_export *export_handle);
 
 /* I/O management */
 fsal_status_t dmlite_open(struct fsal_obj_handle *obj_hdl,

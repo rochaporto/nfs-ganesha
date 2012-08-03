@@ -1071,47 +1071,49 @@ static void handle_to_key(struct fsal_obj_handle *public_handle,
  * release our export first so they know we are gone
  */
 
-static fsal_status_t release(struct fsal_obj_handle *obj_hdl)
+static fsal_status_t release(struct fsal_obj_handle *public_handle)
 {
-	struct fsal_export *exp = obj_hdl->export;
-	struct dmlite_fsal_obj_handle *myself;
-	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
 	int retval = 0;
-
+	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
+	struct fsal_export *exp = public_handle->export;
+	struct dmlite_fsal_obj_handle *priv_handle;
+		
 	LogFullDebug(COMPONENT_FSAL, "release: start");
 
-	myself = container_of(obj_hdl, struct dmlite_fsal_obj_handle, obj_handle);
-	pthread_mutex_lock(&obj_hdl->lock);
-	obj_hdl->refs--;  /* subtract the reference when we were created */
-	if(obj_hdl->refs != 0 || (obj_hdl->type == REGULAR_FILE
-				  && (myself->u.file.lock_status != 0
-				      || myself->u.file.fd >=0
-				      || myself->u.file.openflags != FSAL_O_CLOSED))) {
-		pthread_mutex_unlock(&obj_hdl->lock);
-		retval = obj_hdl->refs > 0 ? EBUSY : EINVAL;
+	/* Fetch the private handler of the file */
+	priv_handle = container_of(public_handle, struct dmlite_fsal_obj_handle, obj_handle);
+	
+	pthread_mutex_lock(&public_handle->lock);
+	public_handle->refs--;  /* subtract the reference when we were created */
+	if(public_handle->refs != 0 || (public_handle->type == REGULAR_FILE
+				  && (priv_handle->u.file.lock_status != 0
+				      || priv_handle->u.file.fd >=0
+				      || priv_handle->u.file.openflags != FSAL_O_CLOSED))) {
+		pthread_mutex_unlock(&public_handle->lock);
+		retval = public_handle->refs > 0 ? EBUSY : EINVAL;
 		LogCrit(COMPONENT_FSAL,
 			"Tried to release busy handle, "
 			"hdl = 0x%p->refs = %d, fd = %d, openflags = 0x%x, lock = %d",
-			obj_hdl, obj_hdl->refs,
-			myself->u.file.fd, myself->u.file.openflags,
-			myself->u.file.lock_status);
+			public_handle, public_handle->refs,
+			priv_handle->u.file.fd, priv_handle->u.file.openflags,
+			priv_handle->u.file.lock_status);
 		return fsalstat(posix2fsal_error(retval), retval);
 	}
-	fsal_detach_handle(exp, &obj_hdl->handles);
-	pthread_mutex_unlock(&obj_hdl->lock);
-	pthread_mutex_destroy(&obj_hdl->lock);
-	myself->obj_handle.ops = NULL; /*poison myself */
-	myself->obj_handle.export = NULL;
-	if(obj_hdl->type == SYMBOLIC_LINK) {
-		if(myself->u.symlink.link_content != NULL)
-			free(myself->u.symlink.link_content);
-	} else if(obj_hdl->type == SOCKET_FILE) {
-		if(myself->u.sock.sock_name != NULL)
-			free(myself->u.sock.sock_name);
-		if(myself->u.sock.sock_dir != NULL)
-			free(myself->u.sock.sock_dir);
+	fsal_detach_handle(exp, &public_handle->handles);
+	pthread_mutex_unlock(&public_handle->lock);
+	pthread_mutex_destroy(&public_handle->lock);
+	priv_handle->obj_handle.ops = NULL; /*poison myself */
+	priv_handle->obj_handle.export = NULL;
+	if(public_handle->type == SYMBOLIC_LINK) {
+		if(priv_handle->u.symlink.link_content != NULL)
+			free(priv_handle->u.symlink.link_content);
+	} else if(public_handle->type == SOCKET_FILE) {
+		if(priv_handle->u.sock.sock_name != NULL)
+			free(priv_handle->u.sock.sock_name);
+		if(priv_handle->u.sock.sock_dir != NULL)
+			free(priv_handle->u.sock.sock_dir);
 	}
-	free(myself);
+	free(priv_handle);
 	return fsalstat(fsal_error, 0);
 }
 
@@ -1217,10 +1219,59 @@ fsal_status_t dmlite_create_handle(struct fsal_export *export_handle,
 								   struct gsh_buffdesc *hdl_desc,
 								   struct fsal_obj_handle **out_handle)
 {
+	int retval = 0;
+	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
+	struct dmlite_context *dmlite_context_obj;
+	struct dmlite_fsal_obj_handle *dmlite_priv_handle;
+	struct dmlite_handle dmlite_handle_obj;
+	struct dmlite_xstat dmlite_xstat_obj;
+
 	LogFullDebug(COMPONENT_FSAL, "dmlite_create_handle: start");
 
-	// TODO: do we need this one?
+	if(hdl_desc->len > sizeof(struct dmlite_handle))
+		return fsalstat(ERR_FSAL_FAULT, 0);
 
-	return fsalstat(ERR_FSAL_NO_ERROR, 0);	
+	memcpy(&dmlite_handle_obj, hdl_desc->addr, hdl_desc->len);  /* struct aligned copy */
+	
+	/* Get a dmlite_context object */
+	dmlite_context_obj = dmlite_get_context(export_handle);
+	if (dmlite_context_obj == NULL) {
+		LogMajor(COMPONENT_FSAL, "dmlite_create_handle: failed to create context");
+		fsal_error = ERR_FSAL_FAULT;
+		goto errout;
+	}
+	
+	/* Fetch the stat information for the request path */
+	memset(&dmlite_xstat_obj, 0, sizeof(struct dmlite_xstat));
+	retval = dmlite_istatx(dmlite_context_obj, dmlite_handle_obj.ino, &dmlite_xstat_obj);
+	if (retval != 0) {
+		LogMajor(COMPONENT_FSAL, "dmlite_create_handle: failed to lookup :: %s", 
+					dmlite_error(dmlite_context_obj));
+		fsal_error = ERR_FSAL_FAULT;
+		goto errout;
+	}
+
+	/* Allocate a handle object and fill it up with the stat info */
+	dmlite_priv_handle = allocate_handle(&dmlite_xstat_obj, export_handle);
+	if(dmlite_priv_handle == NULL) {
+		fsal_error = ERR_FSAL_NOMEM;
+		LogMajor(COMPONENT_FSAL, "dmlite_create_handle: failed to allocate handle");
+		*out_handle = NULL; /* poison it */
+		goto errout;
+	}
+
+	/* And return too... */
+	(*out_handle) = &(dmlite_priv_handle->obj_handle);
+
+	/* And we're done... do the final cleanup and return */
+	if (dmlite_context_obj != NULL)
+		dmlite_context_free(dmlite_context_obj);
+
+	return fsalstat(ERR_FSAL_NO_ERROR, 0);
+
+errout:
+	if (dmlite_context_obj != NULL)
+		dmlite_context_free(dmlite_context_obj);
+	return fsalstat(fsal_error, retval);	
 }
 
