@@ -81,7 +81,7 @@ static struct dmlite_fsal_obj_handle *allocate_handle(struct dmlite_xstat *dmlit
 	dmlite_priv_obj->dmlite.ino = dmlite_stat->stat.st_ino;
 
 	/* Set public pointer (obj_handle from fsal_api.h) properties */
-	dmlite_priv_obj->obj_handle.type = posix2fsal_type(dmlite_stat->stat.st_mode);
+	//dmlite_priv_obj->obj_handle.type = posix2fsal_type(dmlite_stat->stat.st_mode);
 	dmlite_priv_obj->obj_handle.export = exp_hdl;
 	dmlite_priv_obj->obj_handle.attributes.mask
 		= exp_hdl->ops->fs_supported_attrs(exp_hdl);
@@ -275,7 +275,7 @@ static fsal_status_t makedir(struct fsal_obj_handle *parent_public_handle,
 	struct dmlite_fsal_obj_handle *dmlite_dir_priv_handle;
 	struct dmlite_xstat dmlite_xstat_obj;
 	
-	LogFullDebug(COMPONENT_FSAL, "makedir: start");
+	LogFullDebug(COMPONENT_FSAL, "makedir: start :: %d", dir_attrs->mode);
 
 	/* Make sure we clean it up first */
 	*dir_out_public_handle = NULL;
@@ -298,14 +298,17 @@ static fsal_status_t makedir(struct fsal_obj_handle *parent_public_handle,
 		fsal_error = ERR_FSAL_FAULT;
 		goto errout;
 	}
-	
+		
 	/* Go ahead and create the catalog entry */
+	memset(&dmlite_xstat_obj, 0, sizeof(dmlite_xstat));
 	dmlite_xstat_obj.parent = dmlite_parent_priv_handle->dmlite.ino;
 	dmlite_xstat_obj.stat.st_mode = fsal2unix_mode(dir_attrs->mode)
-		& ~parent_public_handle->export->ops->fs_umask(parent_public_handle->export);
+			& ~parent_public_handle->export->ops->fs_umask(parent_public_handle->export);
+	dmlite_xstat_obj.stat.st_mode = dmlite_xstat_obj.stat.st_mode | S_IFDIR;
 	dmlite_xstat_obj.stat.st_uid = dir_attrs->owner;
 	dmlite_xstat_obj.stat.st_gid = dir_attrs->group;
-	strncpy(dmlite_xstat_obj.name, dir_name, NAME_MAX); 
+	strncpy(dmlite_xstat_obj.name, dir_name, NAME_MAX);
+	dmlite_xstat_obj.status = kOnline; 
 	retval = dmlite_icreate(dmlite_context_obj, &dmlite_xstat_obj);
 	if (retval != 0) {
 		LogMajor(COMPONENT_FSAL, "makedir: failed to create new directory entry :: %s",
@@ -407,11 +410,14 @@ static fsal_status_t makesymlink(struct fsal_obj_handle *parent_public_handle,
 	}
 		
 	/* We start by creating the new entry */
+	memset(&dmlite_xstat_obj, 0, sizeof(dmlite_xstat));
 	dmlite_xstat_obj.parent = dmlite_parent_priv_handle->dmlite.ino;
-	strncpy(dmlite_xstat_obj.name, file_name, NAME_MAX);
-	dmlite_xstat_obj.stat.st_mode = link_attrs->mode;
+	dmlite_xstat_obj.stat.st_mode = fsal2unix_mode(link_attrs->mode)
+			& ~parent_public_handle->export->ops->fs_umask(parent_public_handle->export);
+	dmlite_xstat_obj.stat.st_mode = link_attrs->mode | S_IFLNK;
 	dmlite_xstat_obj.stat.st_uid = link_attrs->owner;
 	dmlite_xstat_obj.stat.st_gid = link_attrs->group;
+	strncpy(dmlite_xstat_obj.name, file_name, NAME_MAX);
 	retval = dmlite_icreate(dmlite_context_obj, &dmlite_xstat_obj);
 	if (retval != 0) {
 		LogMajor(COMPONENT_FSAL, "makesymlink: failed to create new entry :: %s",
@@ -726,69 +732,9 @@ errout:
 static fsal_status_t getattrs(struct fsal_obj_handle *obj_hdl,
                               struct attrlist *obj_attr)
 {
-	struct dmlite_fsal_obj_handle *myself;
-	fsal_errors_t fsal_error = ERR_FSAL_NO_ERROR;
-	int retval = 0;
-	
 	LogFullDebug(COMPONENT_FSAL, "getattrs: start");
 	
-	myself = container_of(obj_hdl, struct dmlite_fsal_obj_handle, obj_handle);
-	//mntfd = dmlite_get_root_fd(obj_hdl->export);
-	/**if(obj_hdl->type == SOCKET_FILE) {
-		fd = open_by_handle_at(mntfd,
-				       myself->u.sock.sock_dir,
-				       (O_PATH|O_NOACCESS));
-		if(fd < 0) {
-			goto errout;
-		}
-		retval = fstatat(fd,
-				 myself->u.sock.sock_name,
-				 &stat,
-				 AT_SYMLINK_NOFOLLOW);
-		if(retval < 0) {
-			goto errout;
-		}
-	} else {
-		if(obj_hdl->type == SYMBOLIC_LINK)
-			open_flags |= O_PATH;
-		else if(obj_hdl->type == FIFO_FILE)
-			open_flags |= O_NONBLOCK;
-		fd = open_by_handle_at(mntfd, myself->handle, open_flags);
-		if(fd < 0) {
-			goto errout;
-		}
-		retval = fstatat(fd,
-				 "",
-				 &stat,
-				 (AT_SYMLINK_NOFOLLOW|AT_EMPTY_PATH));
-		if(retval < 0) {
-			goto errout;
-		}
-	}*/
-
-	/* convert attributes *//**
-	obj_hdl->attributes.mask = obj_attr->mask;
-	st = posix2fsal_attributes(&stat, &obj_hdl->attributes);
-	if(FSAL_IS_ERROR(st)) {
-		FSAL_CLEAR_MASK(obj_attr->mask);
-		FSAL_SET_MASK(obj_attr->mask,
-			      ATTR_RDATTR_ERR);
-		fsal_error = st.major;  retval = st.minor;
-		goto out;
-	}
-	memcpy(obj_attr, &obj_hdl->attributes, sizeof(struct attrlist));
-	goto out;
-
-errout:
-        retval = errno;
-        if(retval == ENOENT)
-                fsal_error = ERR_FSAL_STALE;
-        else
-                fsal_error = posix2fsal_error(retval);
-out:
-	if(fd >= 0)
-		close(fd);*/
-	return fsalstat(fsal_error, retval);	
+	return fsalstat(ERR_FSAL_NO_ERROR, 0);	
 }
 
 /*
@@ -811,6 +757,9 @@ static fsal_status_t setattrs(struct fsal_obj_handle *public_handle,
 		attrs->mode
 			&= ~public_handle->export->ops->fs_umask(public_handle->export);
 	}
+	
+	// TODO: we shouldn't have to do this, the mode should have the type already
+	
 	
 	/* Fetch the private handler of the file */
 	dmlite_priv_handle = container_of(public_handle,
@@ -836,8 +785,10 @@ static fsal_status_t setattrs(struct fsal_obj_handle *public_handle,
 	
 	/* chmod: call dmlite_isetmode */
 	if(FSAL_TEST_MASK(attrs->mask, ATTR_MODE) && public_handle->type != SYMBOLIC_LINK) {
+		
 		retval = dmlite_isetmode(dmlite_context_obj, dmlite_priv_handle->dmlite.ino, 
-			-1, -1, fsal2unix_mode(attrs->mode), -1, NULL);
+			dmlite_xstat_obj.stat.st_uid, dmlite_xstat_obj.stat.st_gid, 
+			fsal2unix_mode(attrs->mode), 0, NULL);
 		if (retval != 0) {
 			LogMajor(COMPONENT_FSAL, "setattrs: failed to set mode :: %s",
 					dmlite_error(dmlite_context_obj));
@@ -850,8 +801,10 @@ static fsal_status_t setattrs(struct fsal_obj_handle *public_handle,
 			  ATTR_OWNER | ATTR_GROUP)) {
 		uid_t user = FSAL_TEST_MASK(attrs->mask, ATTR_OWNER) ? (int)attrs->owner : -1;
 		gid_t group = FSAL_TEST_MASK(attrs->mask, ATTR_GROUP) ? (int)attrs->group : -1;
-		retval = dmlite_isetmode(dmlite_context_obj, dmlite_priv_handle->dmlite.ino,
-			user, group, -1, -1, NULL);
+
+		retval = dmlite_isetmode(dmlite_context_obj, dmlite_priv_handle->dmlite.ino, 
+			user, group, dmlite_xstat_obj.stat.st_mode, 
+			sizeof(dmlite_xstat_obj.acl) / ACL_SIZE, dmlite_xstat_obj.acl);
 		if (retval != 0) {
 			LogMajor(COMPONENT_FSAL, "setattrs: failed to change owner/group :: %s",
 					dmlite_error(dmlite_context_obj));
@@ -947,10 +900,11 @@ static fsal_status_t file_unlink(struct fsal_obj_handle *parent_public_handle,
 	
 	/* Fetch the current information about the file */
 	memset(&dmlite_xstat_obj, 0, sizeof(struct dmlite_xstat));
-	retval = dmlite_istatx(dmlite_context_obj, 
-		dmlite_parent_priv_handle->dmlite.ino, &dmlite_xstat_obj);
+	retval = dmlite_istatx_by_name(dmlite_context_obj, 
+		dmlite_parent_priv_handle->dmlite.ino, name, &dmlite_xstat_obj);
 	if (retval != 0) {
-		LogMajor(COMPONENT_FSAL, "file_unlink: failed to stat file :: %s", 
+		retval = dmlite_errno(dmlite_context_obj);
+		LogMajor(COMPONENT_FSAL, "file_unlink: failed to stat entry :: %s", 
 					dmlite_error(dmlite_context_obj));
 		fsal_error = ERR_FSAL_FAULT;
 		goto errout;
@@ -959,7 +913,7 @@ static fsal_status_t file_unlink(struct fsal_obj_handle *parent_public_handle,
 	/* Unlink using the inode from above */
 	retval = dmlite_iunlink(dmlite_context_obj, dmlite_xstat_obj.stat.st_ino);
 	if (retval != 0) {
-		LogMajor(COMPONENT_FSAL, "file_unlink: failed to stat file :: %s", 
+		LogMajor(COMPONENT_FSAL, "file_unlink: failed to unlink file :: %s", 
 					dmlite_error(dmlite_context_obj));
 		fsal_error = ERR_FSAL_FAULT;
 		goto errout;
@@ -994,14 +948,14 @@ static fsal_status_t handle_digest(struct fsal_obj_handle *public_handle,
 	struct dmlite_fsal_obj_handle *dmlite_priv_handle;
 	int handle_size;
 	
-	LogFullDebug(COMPONENT_FSAL, "handle_digest: start");
-
 	/* Some basic checks */
     if( !fh_desc)
 		return fsalstat(ERR_FSAL_FAULT, 0);
 		
 	dmlite_priv_handle = container_of(public_handle, struct dmlite_fsal_obj_handle, obj_handle);
 
+	LogFullDebug(COMPONENT_FSAL, "handle_digest: start :: %d", dmlite_priv_handle->dmlite.ino);
+	
 	switch(output_type) {
 	case FSAL_DIGEST_NFSV2:
 	case FSAL_DIGEST_NFSV3:
@@ -1057,10 +1011,12 @@ static void handle_to_key(struct fsal_obj_handle *public_handle,
 {
 	struct dmlite_fsal_obj_handle *dmlite_priv_handle;
 
-	LogFullDebug(COMPONENT_FSAL, "handle_to_key: start");
-	
 	dmlite_priv_handle = container_of(public_handle, 
 		struct dmlite_fsal_obj_handle, obj_handle);
+		
+	LogFullDebug(COMPONENT_FSAL, "handle_to_key: start :: %d", 
+		dmlite_priv_handle->dmlite.ino);
+	
 	fh_desc->addr = &dmlite_priv_handle->dmlite.ino; 
 	fh_desc->len = sizeof(dmlite_priv_handle->dmlite.ino);
 }
