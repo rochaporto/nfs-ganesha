@@ -8,7 +8,7 @@
  * \author  $Author: leibovic $
  * \date    $Date: 2006/01/17 15:53:39 $
  * \version $Revision: 1.31 $
- * \brief   VFS-FSAL type translation functions.
+ * \brief   DMLITE-FSAL type translation functions.
  *
  *
  */
