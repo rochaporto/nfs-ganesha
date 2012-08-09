@@ -135,7 +135,9 @@ open4_do_open(struct nfs_argop4  * op,
                 }
         }
 
-        candidate_data.share.share_access      = args->share_access;
+        candidate_data.share.share_access
+                = (args->share_access &
+                   ~OPEN4_SHARE_ACCESS_WANT_DELEG_MASK);
         candidate_data.share.share_deny        = args->share_deny;
         candidate_data.share.share_access_prev = 0;
         candidate_data.share.share_deny_prev   = 0;
@@ -596,7 +598,7 @@ open4_create(OPEN4args           * arg,
         }
 
         *entry = entry_newfile;
-        return NFS4_OK;
+        return nfs4_Errno(cache_status);
 }
 
 
@@ -631,18 +633,13 @@ open4_claim_null(OPEN4args        * arg,
 
         parent = data->current_entry;
 
-        if (arg->claim.open_claim4_u.file.utf8string_len == 0) {
-                nfs_status = NFS4ERR_INVAL;
-                goto out;
-        }
-
         /**
-         * @todo ACE: Fix this after fsal_name_t is eradicated..
+         * Validate and convert the utf8 filename
          */
-        if (!(filename
-              = nfs4_utf8string2dynamic(&arg->claim
-                                        .open_claim4_u.file))) {
-                nfs_status = NFS4ERR_SERVERFAULT;
+	nfs_status = nfs4_utf8string2dynamic(&arg->claim.open_claim4_u.file,
+					     UTF8_SCAN_ALL,
+					     &filename);
+        if (nfs_status != NFS4_OK) {
                 goto out;
         }
 
@@ -864,7 +861,8 @@ int nfs4_op_open(struct nfs_argop4 *op,
          * have any invalid bits set.
          */
         if (!(arg_OPEN4->share_access & OPEN4_SHARE_ACCESS_BOTH) ||
-            (arg_OPEN4->share_access & ~OPEN4_SHARE_ACCESS_BOTH) ||
+            (arg_OPEN4->share_access & (~OPEN4_SHARE_ACCESS_WANT_DELEG_MASK &
+                                        ~OPEN4_SHARE_ACCESS_BOTH)) ||
             (arg_OPEN4->share_deny & ~OPEN4_SHARE_DENY_BOTH)) {
                 res_OPEN4->status = NFS4ERR_INVAL;
                 goto out;

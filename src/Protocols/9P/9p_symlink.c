@@ -69,10 +69,10 @@ int _9p_symlink( _9p_request_data_t * preq9p,
   _9p_qid_t qid_symlink ;
 
   cache_entry_t       * pentry_symlink = NULL ;
-  fsal_name_t           symlink_name ; 
-  fsal_attrib_list_t    fsalattr ;
+  char                  symlink_name[MAXNAMLEN] ; 
+  struct attrlist       fsalattr ;
   cache_inode_status_t  cache_status ;
-  fsal_accessmode_t mode = 0777;
+  uint32_t mode = 0777;
   cache_inode_create_arg_t create_arg;
 
   if ( !preq9p || !pworker_data || !plenout || !preply )
@@ -96,22 +96,28 @@ int _9p_symlink( _9p_request_data_t * preq9p,
 
    pfid = &preq9p->pconn->fids[*fid] ;
  
-   snprintf( symlink_name.name, FSAL_MAX_NAME_LEN, "%.*s", *name_len, name_str ) ;
-   symlink_name.len = *name_len + 1 ;
-   snprintf( create_arg.link_content.path, FSAL_MAX_PATH_LEN, "%.*s", *linkcontent_len, linkcontent_str ) ;
-   create_arg.link_content.len =  *linkcontent_len + 1 ;
+   snprintf( symlink_name, MAXNAMLEN, "%.*s", *name_len, name_str ) ;
+
+   if( ( create_arg.link_content = gsh_malloc( MAXPATHLEN ) ) == NULL )
+    return _9p_rerror( preq9p, msgtag, EFAULT, plenout, preply ) ;
+   
+   
+   snprintf( create_arg.link_content, MAXPATHLEN, "%.*s", *linkcontent_len, linkcontent_str ) ;
  
    /* Let's do the job */
    /* BUGAZOMEU: @todo : the gid parameter is not used yet, flags is not yet used */
    if( ( pentry_symlink = cache_inode_create( pfid->pentry,
-                                              &symlink_name,
+                                              symlink_name,
                                               SYMBOLIC_LINK,
                                               mode,
                                               &create_arg,
                                               &fsalattr,
-                                              &pfid->fsal_op_context,
+                                              &pfid->op_context,
                                               &cache_status)) == NULL)
-     return _9p_rerror( preq9p, msgtag, _9p_tools_errno( cache_status ), plenout, preply ) ;
+    {
+      if( create_arg.link_content != NULL ) gsh_free( create_arg.link_content ) ;
+      return _9p_rerror( preq9p, msgtag, _9p_tools_errno( cache_status ), plenout, preply ) ;
+    }
 
    /* Build the qid */
    qid_symlink.type    = _9P_QTSYMLINK ;
@@ -131,6 +137,8 @@ int _9p_symlink( _9p_request_data_t * preq9p,
             "RSYMLINK: tag=%u fid=%u name=%.*s qid=(type=%u,version=%u,path=%llu)",
             (u32)*msgtag, *fid, *name_len, name_str, qid_symlink.type, qid_symlink.version, (unsigned long long)qid_symlink.path ) ;
 
+  /* Clean allocated buffer */
+  if( create_arg.link_content != NULL ) gsh_free( create_arg.link_content ) ;
 
   return 1 ;
 }

@@ -56,7 +56,6 @@ int _9p_auth( _9p_request_data_t * preq9p,
               char * preply)
 {
   char * cursor = preq9p->_9pmsg + _9P_HDR_SIZE + _9P_TYPE_SIZE ;
-  nfs_worker_data_t * pwkrdata = (nfs_worker_data_t *)pworker_data ;
 
   u16 * msgtag = NULL ;
   u32 * afid = NULL ;
@@ -66,7 +65,7 @@ int _9p_auth( _9p_request_data_t * preq9p,
   char * aname_str = NULL ;
   u32 * n_aname = NULL ;
 
-  fsal_attrib_list_t fsalattr ;
+  struct attrlist fsalattr ;
 
   u32 err = 0 ;
  
@@ -76,6 +75,7 @@ int _9p_auth( _9p_request_data_t * preq9p,
   unsigned int found = FALSE;
   cache_inode_status_t cache_status ;
   cache_inode_fsal_data_t fsdata ;
+  char fkey_data[NFS4_FHSIZE];
 
   if ( !preq9p || !pworker_data || !plenout || !preply )
    return -1 ;
@@ -126,29 +126,32 @@ int _9p_auth( _9p_request_data_t * preq9p,
   pfid= &preq9p->pconn->fids[*afid] ;
   pfid->pexport = pexport ;
   pfid->fid = *afid ;
-  memcpy( &pfid->fsal_op_context, &pwkrdata->thread_fsal_context, sizeof( fsal_op_context_t ) ) ;
+  // BUGAZOMEU memcpy( &pfid->op_context, &pwkrdata->thread_fsal_context, sizeof( &pfid->op_context ) ) ;
 
   /* Is user name provided as a string or as an uid ? */
   if( *uname_len != 0 )
    {
      /* Build the fid creds */
-    if( ( err = _9p_tools_get_fsal_op_context_by_name( *uname_len, uname_str, pfid ) ) !=  0 )
+    if( ( err = _9p_tools_get_req_context_by_name( *uname_len, uname_str, pfid ) ) !=  0 )
        return _9p_rerror( preq9p, msgtag, -err, plenout, preply ) ;
    }
   else
    {
     /* Build the fid creds */
-    if( ( err = _9p_tools_get_fsal_op_context_by_uid( *n_aname, pfid ) ) !=  0 )
+    if( ( err = _9p_tools_get_req_context_by_uid( *n_aname, pfid ) ) !=  0 )
        return _9p_rerror( preq9p, msgtag, -err, plenout, preply ) ;
    }
 
   /* Get the related pentry */
-  fsdata.fh_desc.start = (char *)pexport->proot_handle ;
-  fsdata.fh_desc.len = sizeof( fsal_handle_t ) ;
+  memset(&fsdata, 0, sizeof(fsdata));
+  fsdata.fh_desc.addr = fkey_data ; 
+  fsdata.fh_desc.len = sizeof( fkey_data ) ;
+  fsdata.export = pexport->export_hdl ;
+
+  pexport->proot_handle->ops->handle_to_key( pexport->proot_handle, &fsdata.fh_desc ) ;
 
   pfid->pentry = cache_inode_get( &fsdata,
                                   &fsalattr,
-                                  &pfid->fsal_op_context,
                                   NULL,
                                   &cache_status ) ;
 

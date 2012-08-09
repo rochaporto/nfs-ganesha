@@ -66,7 +66,7 @@ int _9p_attach( _9p_request_data_t * preq9p,
   char * aname_str = NULL ;
   u32 * n_aname = NULL ;
 
-  fsal_attrib_list_t fsalattr ;
+  struct attrlist fsalattr ;
 
   u32 err = 0 ;
  
@@ -76,6 +76,7 @@ int _9p_attach( _9p_request_data_t * preq9p,
   unsigned int found = FALSE;
   cache_inode_status_t cache_status ;
   cache_inode_fsal_data_t fsdata ;
+  char fkey_data[NFS4_FHSIZE];
 
   if ( !preq9p || !pworker_data || !plenout || !preply )
    return -1 ;
@@ -132,34 +133,37 @@ int _9p_attach( _9p_request_data_t * preq9p,
   if( *uname_len != 0 )
    {
      /* Build the fid creds */
-    if( ( err = _9p_tools_get_fsal_op_context_by_name( *uname_len, uname_str, pfid ) ) !=  0 )
+    if( ( err = _9p_tools_get_req_context_by_name( *uname_len, uname_str, pfid ) ) !=  0 )
       return _9p_rerror( preq9p, msgtag, -err, plenout, preply ) ;
    }
   else
    {
     /* Build the fid creds */
-    if( ( err = _9p_tools_get_fsal_op_context_by_uid( *n_aname, pfid ) ) !=  0 )
+    if( ( err = _9p_tools_get_req_context_by_uid( *n_aname, pfid ) ) !=  0 )
       return _9p_rerror( preq9p, msgtag, -err, plenout, preply ) ;
    }
 
   /* Get the related pentry */
-  fsdata.fh_desc.start = (char *)pexport->proot_handle ;
-  FSAL_ExpandHandle(pfid->fsal_op_context.export_context, FSAL_DIGEST_SIZEOF, &fsdata.fh_desc);
+  memset(&fsdata, 0, sizeof(fsdata));
+  fsdata.fh_desc.addr = fkey_data ; 
+  fsdata.fh_desc.len = sizeof( fkey_data ) ;
+  fsdata.export = pexport->export_hdl ;
+
+  pexport->proot_handle->ops->handle_to_key( pexport->proot_handle, &fsdata.fh_desc ) ;
+
+  /* refcount +1 */
+  pfid->pentry = cache_inode_get( &fsdata,
+                                  &fsalattr,
+                                  NULL,
+                                  &cache_status ) ;
 
   /* refcount */
   if (pfid->pentry) {
       cache_inode_put(pfid->pentry);
   }
 
-  /* refcount +1 */
-  pfid->pentry = cache_inode_get( &fsdata,
-                                  &fsalattr,
-                                  &pfid->fsal_op_context,
-                                  NULL,
-                                  &cache_status ) ;
-
   if( pfid->pentry == NULL )
-     return _9p_rerror( preq9p, msgtag, err, plenout, preply ) ;
+     return _9p_rerror( preq9p, msgtag,  _9p_tools_errno( cache_status ), plenout, preply ) ;
 
   /* Compute the qid */
   pfid->qid.type = _9P_QTDIR ;

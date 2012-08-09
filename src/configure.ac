@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ(2.59)
-AC_INIT( [nfs-ganesha], [1.4.0], [philippe.deniel@cea.fr,thomas.leibovici@cea.fr] )
+AC_INIT( [nfs-ganesha], [1.4.0], [philippe.deniel@cea.fr] )
 
 AC_SUBST(RELEASE, [1])
 
@@ -290,20 +290,45 @@ AM_CONDITIONAL(USE_CB_SIMULATOR, test "$enable_cb_simulator" = "yes")
 # during the build
 GA_AM_COND_ON_UNLESS([fsal-proxy],[do not build PROXY FSAL shared library],[USE_FSAL_PROXY])
 GA_AM_COND_ON_UNLESS([fsal-vfs],[do not build VFS FSAL shared library],[USE_FSAL_VFS])
-GA_AM_COND_ON_UNLESS([fsal-ceph],[do not build VFS FSAL shared library],[USE_FSAL_CEPH])
+
+# We only want to turn Ceph on if we have the right library
+
+# explicit Ceph path
+AC_ARG_WITH([ceph-prefix], AS_HELP_STRING([--with-ceph-prefix=<path>], [Path to Ceph installation]),
+	    CEPH_PREFIX="$withval", CEPH_PREFIX="/usr")
+
+
+AC_ARG_ENABLE([fsal-ceph],AS_HELP_STRING([--disable-ceph],[USE_FSAL_CEPH]),
+              [enable_fsal_ceph]=$enableval, [enable_fsal_ceph]='yes')
+
+if test "$enable_fsal_ceph" == "yes"; then
+	AC_CHECK_LIB([cephfs], [ceph_ll_connectable_x],
+		      [AC_DEFINE([_USE_CEPH], 1, [GANESHA exports Ceph Filesystem ])],
+		      [enable_fsal_ceph='no']) 
+	CEPH_CFLAGS="-I${CEPH_PREFIX}/include -D_FILE_OFFSET_BITS=64"
+        CEPH_LDFLAGS="-L${CEPH_PREFIX}/lib"
+	CEPH_LIB="-lcephfs"
+else
+        CEPH_CFLAGS=""
+        CEPH_LDFLAGS=""
+        CEPH_LIB=""
+fi
+
+AM_CONDITIONAL([USE_FSAL_CEPH], test "[$enable_fsal_ceph]"  == "yes")
+
+GA_AM_COND_ON_UNLESS([fsal-lustre],[do not build LUSTRE FSAL shared library],[USE_FSAL_LUSTRE])
+GA_AM_COND_ON_UNLESS([fsal-posix],[do not build POSIX FSAL shared library],[USE_FSAL_POSIX])
 
 # FSALs whicha re disabled by default
 GA_ENABLE_AM_CONDITION([fsal-hpss],[build HPSS FSAL],[USE_FSAL_HPSS])
-GA_ENABLE_AM_CONDITION([fsal-posix],[build POSIX FSAL],[USE_FSAL_POSIX])
 GA_ENABLE_AM_CONDITION([fsal-fuse],[build FUSE FSAL],[USE_FSAL_FUSE])
-GA_ENABLE_AM_CONDITION([fsal-lustre],[build LUSTRE FSAL],[USE_FSAL_LUSTRE])
-# SHOOK is a variant of Lustre FSAL
-GA_ENABLE_AM_CONDITION([fsal-shook],[build SHOOK FSAL],[USE_FSAL_SHOOK])
 GA_ENABLE_AM_CONDITION([fsal-xfs],[build XFS FSAL],[USE_FSAL_XFS])
 GA_ENABLE_AM_CONDITION([fsal-gpfs],[build GPFS FSAL],[USE_FSAL_GPFS])
 GA_ENABLE_AM_CONDITION([fsal-ceph],[build CEPH FSAL],[USE_FSAL_CEPH])
 GA_ENABLE_AM_CONDITION([fsal-dmlite],[build DMLITE FSAL],[USE_FSAL_DMLITE])
 GA_ENABLE_AM_CONDITION([fsal-zfs],[build ZFS FSAL],[USE_FSAL_ZFS])
+# SHOOK is a variant of Lustre FSAL
+GA_ENABLE_AM_CONDITION([fsal-shook],[build SHOOKFSAL],[USE_FSAL_SHOOK])
 
 # FSAL_UP
 GA_ENABLE_AM_CONDITION([fsal-up],[enable FSAL Upcall Interface support],[USE_FSAL_UP])
@@ -506,10 +531,6 @@ if test "$enable_ipv6" == "yes"; then
 	fi
 fi
 
-# explicit Ceph path @todo : add a defaut value
-AC_ARG_WITH([ceph-prefix], AS_HELP_STRING([--with-ceph-prefix=<path>], [Path to Ceph installation] ),
-	    CEPH_PREFIX="$withval", CEPH_PREFIX="/usr" )
-
 # pNFS Metadata Server Support
 GA_ENABLE_AM_CONDITION([pnfs-mds], [enable pNFS Metadata Server support (NFSv4.1 support is mandatory)],[USE_PNFS_MDS])
 if test "x$enable_pnfs_mds" = "xyes"; then
@@ -580,7 +601,7 @@ if test "$enable_fsal_hpss" = "yes"; then
 fi
 
 if test "$enable_fsal_proxy" == "yes"; then
-AC_MSG_WARN([PROXY FSAL is enabled])
+        AC_MSG_WARN([PROXY FSAL is enabled])
 	FSAL_CFLAGS=
 	FSAL_LDFLAGS=$SEC_RPATH
 	FSAL_LIB="\$(top_builddir)/FSAL/FSAL_PROXY/libfsalproxy.la"
@@ -594,6 +615,7 @@ if test "$enable_fsal_fuse" == "yes"; then
 fi
 
 if test "$enable_fsal_lustre" == "yes"; then
+        AC_MSG_WARN([LUSTRE FSAL is enabled])
 	AC_CHECK_HEADERS([attr/xattr.h], [], [AC_MSG_ERROR(missing xattr header files)])
 	AC_CHECK_LIB([lustreapi], [llapi_fid2path], [have_lustre2_api="yes"])
 	if test "x$have_lustre2_api" != "xyes" ; then
@@ -607,12 +629,21 @@ if test "$enable_fsal_lustre" == "yes"; then
 		AC_DEFINE([_LUSTRE_HSM], 1, [Lustre version supports HSM binding])
 	fi
 
-        FSAL_CFLAGS=
-        FSAL_LDFLAGS="-llustreapi"
-        FSAL_LIB="\$(top_builddir)/FSAL/FSAL_LUSTRE/libfsallustre.la"
+        LUSTRE_CFLAGS=
+        LUSTRE_LIB="-llustreapi"
+        LUSTRE_LDFLAGS=
+else
+        LUSTRE_CFLAGS=
+        LUSTRE_LDFLAGS=
+        LUSTRE_LIB=
 fi
 
+AC_SUBST(LUSTRE_CFLAGS)
+AC_SUBST(LUSTRE_LDFLAGS)
+AC_SUBST(LUSTRE_LIB)
+
 if test "$enable_fsal_shook" == "yes"; then
+        AC_MSG_WARN([SHOOK FSAL is enabled])
         # Lustre FSAL compiled with special compilation directives
         AC_CHECK_LIB([shooksvr], [shook_restore],, AC_MSG_ERROR([libshooksvr not found]))
         AC_DEFINE(_SHOOK, 1, [shook is enabled])
@@ -623,10 +654,20 @@ if test "$enable_fsal_shook" == "yes"; then
 		AC_MSG_ERROR([Lustre 2.x and liblustreapi are required])
 	fi
 	AC_DEFINE([_USE_LUSTRE], 1, [GANESHA exports Lustre Filesystem])
-        FSAL_CFLAGS=
-        FSAL_LDFLAGS="-lshooksvr -llustreapi"
-        FSAL_LIB="\$(top_builddir)/FSAL/FSAL_LUSTRE/libfsalshook.la"
+
+        SHOOK_CFLAGS=
+        SHOOK_LDFLAGS=
+        SHOOK_LIB="-lshooksvr -llustreapi"
+else
+        SHOOK_CFLAGS=
+        SHOOK_LDFLAGS=
+        SHOOK_LIB=
 fi
+
+AC_SUBST(SHOOK_CFLAGS)
+AC_SUBST(SHOOK_LDFLAGS)
+AC_SUBST(SHOOK_LIB)
+
 
 if test "$enable_fsal_xfs" == "yes"; then
 	AC_DEFINE([_USE_XFS], 1, [GANESHA exports XFS Filesystem])
@@ -636,19 +677,6 @@ if test "$enable_fsal_xfs" == "yes"; then
 	FSAL_CFLAGS=
 	FSAL_LDFLAGS="-lhandle"
 	FSAL_LIB="\$(top_builddir)/FSAL/FSAL_XFS/libfsalxfs.la"
-fi
-
-if test "$enable_fsal_ceph" == "yes"; then
-	AC_CHECK_LIB([cephfs], [ceph_ll_connectable_x],
-		      [AC_DEFINE([_USE_CEPH], 1, [GANESHA exports Ceph Filesystem ])],
-		      [USE_FSAL_VFS_TRUE='#'])
-	CEPH_CFLAGS="-I${CEPH_PREFIX}/include -D_FILE_OFFSET_BITS=64"
-        CEPH_LDFLAGS="-L${CEPH_PREFIX}/lib"
-	CEPH_LIB="-lcephfs"
-else
-        CEPH_CFLAGS=""
-        CEPH_LDFLAGS=""
-        CEPH_LIB=""
 fi
 
 AC_SUBST(CEPH_CFLAGS)
@@ -816,7 +844,7 @@ if test "$enable_fsal_posix" == "yes"; then
 	AC_DEFINE([_USE_POSIX], 1, [GANESHA is compiled with POSIX FSAL])
 	FSAL_CFLAGS="$DBEXT_FLAGS"
 	FSAL_LDFLAGS="$DBEXT_LDADD"
-	FSAL_LIB="\$(top_builddir)/FSAL/FSAL_POSIX/libfsalposix.la \$(top_builddir)/FSAL/FSAL_POSIX/DBExt/$DBTYPE/libfsaldbext.la"
+	FSAL_LIB="\$(top_builddir)/FSAL/FSAL_POSIX/libfsalposix.la"
 fi
 
 case $RPCAL in
@@ -887,9 +915,6 @@ AC_CONFIG_FILES([include/Makefile
 		 FSAL/FSAL_HPSS/Makefile
 		 FSAL/FSAL_HPSS/HPSSclapiExt/Makefile
 		 FSAL/FSAL_POSIX/Makefile
-		 FSAL/FSAL_POSIX/DBExt/Makefile
-		 FSAL/FSAL_POSIX/DBExt/PGSQL/Makefile
-		 FSAL/FSAL_POSIX/DBExt/MYSQL/Makefile
 		 FSAL/FSAL_PROXY/Makefile
 		 FSAL/FSAL_CEPH/Makefile
 		 FSAL/FSAL_DMLITE/Makefile

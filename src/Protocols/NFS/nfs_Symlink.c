@@ -222,11 +222,15 @@ int nfs_Symlink(nfs_arg_t *parg,
       break;
     }
 
+    create_arg.link_content = target_path;
+
   if(symlink_name == NULL ||
      *symlink_name == '\0'||
      target_path == NULL  ||
-     *target_path == '\0')
-    /* Make the symlink */
+     *target_path == '\0') {
+      cache_status = CACHE_INODE_INVALID_ARGUMENT;
+  } else {
+        /* Make the symlink */
     if((symlink_pentry = cache_inode_create(parent_pentry,
                                             symlink_name,
                                             SYMBOLIC_LINK,
@@ -348,7 +352,7 @@ int nfs_Symlink(nfs_arg_t *parg,
         rc = NFS_REQ_OK;
         goto out;
       }
-
+  }
   /* If we are here, there was an error */
   if(nfs_RetryableError(cache_status))
     {

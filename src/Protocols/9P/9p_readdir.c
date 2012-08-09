@@ -70,63 +70,62 @@ typedef struct _9p_cb_entry
 typedef struct _9p_cb_data 
 {
    _9p_cb_entry_t * entries ;
-   size_t count ;
-   size_t max ;
+   unsigned int count ;
+   unsigned int max ;
 } _9p_cb_data_t ;
 
-static bool_t _9p_readdir_callback( void* opaque,
-                                    char *name,
-                                    fsal_handle_t *handle,
-                                    fsal_attrib_list_t * pattrs,
-                                    uint64_t cookie)
+static bool_t _9p_readdir_callback( void                   * opaque,
+                                    char                   * name,
+                                    struct fsal_obj_handle * handle,
+                                    uint64_t                 cookie)
 {
    _9p_cb_data_t * cb_data = opaque ;
 
   if( cb_data == NULL )
    return FALSE ;
 
-  if( cb_data->count > cb_data->max )
+  if( cb_data->count >= cb_data->max )
    return FALSE ;
 
-  cb_data->entries[cb_data->count].qid_path = pattrs->fileid ;
+  cb_data->entries[cb_data->count].qid_path = handle->attributes.fileid ;
   cb_data->entries[cb_data->count].name_str = name ;
   cb_data->entries[cb_data->count].name_len = strlen( name ) ;
   cb_data->entries[cb_data->count].cookie = cookie ;
  
-  switch( pattrs->type ) 
+  switch( handle->attributes.type ) 
    {
-      case FSAL_TYPE_FIFO:
+      case FIFO_FILE:
         cb_data->entries[cb_data->count].qid_type = &qid_type_file ;
         cb_data->entries[cb_data->count].d_type = DT_FIFO ;
         break ;
 
-      case FSAL_TYPE_CHR:
+      case CHARACTER_FILE:
         cb_data->entries[cb_data->count].qid_type = &qid_type_file ;
         cb_data->entries[cb_data->count].d_type = DT_CHR ;
         break ;
 
-      case FSAL_TYPE_BLK:
+      case BLOCK_FILE:
         cb_data->entries[cb_data->count].qid_type = &qid_type_file ;
         cb_data->entries[cb_data->count].d_type = DT_BLK ;
         break ;
 
-      case FSAL_TYPE_FILE:
+      case REGULAR_FILE:
         cb_data->entries[cb_data->count].qid_type = &qid_type_file ;
         cb_data->entries[cb_data->count].d_type = DT_REG ;
         break ;
 
-      case FSAL_TYPE_SOCK:
+      case SOCKET_FILE:
         cb_data->entries[cb_data->count].qid_type = &qid_type_file ;
         cb_data->entries[cb_data->count].d_type = DT_SOCK ;
         break ;
 
-      case FSAL_TYPE_JUNCTION:
-      case FSAL_TYPE_DIR:
+      case FS_JUNCTION:
+      case DIRECTORY:
         cb_data->entries[cb_data->count].qid_type = &qid_type_dir ;
         cb_data->entries[cb_data->count].d_type = DT_DIR ;
         break ;
 
-      case FSAL_TYPE_LNK:
+      case SYMBOLIC_LINK:
         cb_data->entries[cb_data->count].qid_type = &qid_type_symlink ;
         cb_data->entries[cb_data->count].d_type = DT_LNK ;
         break ;
@@ -204,9 +203,12 @@ int _9p_readdir( _9p_request_data_t * preq9p,
    * -------------------
    * total   = ~40 bytes (average size) per dentry */
   estimated_num_entries = (unsigned int)( *count / 40 ) ;
+  if (estimated_num_entries > _9P_MAXDIRCOUNT)
+    estimated_num_entries = _9P_MAXDIRCOUNT ;
 
-  if((cb_data.entries = gsh_calloc(estimated_num_entries,
-                                   sizeof(_9p_cb_entry_t))) == NULL)
+  if((estimated_num_entries < 2) || /* require room for . and .. */
+    ((cb_data.entries = gsh_calloc(estimated_num_entries,
+                                   sizeof(_9p_cb_entry_t))) == NULL))
     return _9p_rerror( preq9p, msgtag, EIO, plenout, preply ) ;
 
    /* Is this the first request ? */
@@ -214,12 +216,12 @@ int _9p_readdir( _9p_request_data_t * preq9p,
    {
       /* compute the parent entry */
       if( ( pentry_dot_dot = cache_inode_lookupp( pfid->pentry,
-                                                  &pfid->fsal_op_context,
+                                                  &pfid->op_context,
                                                   &cache_status ) ) == NULL )
         return _9p_rerror( preq9p, msgtag, _9p_tools_errno( cache_status ), plenout, preply ) ;
 
-      /* Deal with "." and ".." */
-      cb_data.entries[0].qid_path =  pfid->pentry->attributes.fileid ;
+      /* Deal with "." and ".." */  
+      cb_data.entries[0].qid_path =  pfid->pentry->obj_handle->attributes.fileid ;
       cb_data.entries[0].qid_type =  &qid_type_dir ;
       cb_data.entries[0].d_type   =  DT_DIR ;
       cb_data.entries[0].name_str =  pathdot ;
@@ -227,7 +229,7 @@ int _9p_readdir( _9p_request_data_t * preq9p,
       cb_data.entries[0].cookie   =  1LL ;
 
 
-      cb_data.entries[1].qid_path =  pentry_dot_dot->attributes.fileid ;
+      cb_data.entries[1].qid_path =  pentry_dot_dot->obj_handle->attributes.fileid ;
       cb_data.entries[1].qid_type =  &qid_type_dir ;
       cb_data.entries[1].d_type   =  DT_DIR ;
       cb_data.entries[1].name_str =  pathdotdot ;
@@ -241,11 +243,11 @@ int _9p_readdir( _9p_request_data_t * preq9p,
    {
       /* compute the parent entry */
       if( ( pentry_dot_dot = cache_inode_lookupp( pfid->pentry,
-                                                  &pfid->fsal_op_context,
+                                                  &pfid->op_context,
                                                   &cache_status ) ) == NULL )
         return _9p_rerror( preq9p, msgtag, _9p_tools_errno( cache_status ), plenout, preply ) ;
 
-      cb_data.entries[0].qid_path =  pentry_dot_dot->attributes.fileid ;
+      cb_data.entries[0].qid_path =  pentry_dot_dot->obj_handle->attributes.fileid ;
       cb_data.entries[0].qid_type =  &qid_type_dir ;
       cb_data.entries[0].d_type   =  DT_DIR ;
       cb_data.entries[0].name_str =  pathdotdot ;
@@ -268,13 +270,13 @@ int _9p_readdir( _9p_request_data_t * preq9p,
 
    
   cb_data.count = delta ;
-  cb_data.max = _9P_MAXDIRCOUNT - delta ;
+  cb_data.max = estimated_num_entries ;
 
   if(cache_inode_readdir( pfid->pentry,
                           cookie,
                           &num_entries,
                           &eod_met,
-                          &pfid->fsal_op_context, 
+                          &pfid->op_context, 
                           _9p_readdir_callback,
                           &cb_data,
                           &cache_status) != CACHE_INODE_SUCCESS)
@@ -283,12 +285,7 @@ int _9p_readdir( _9p_request_data_t * preq9p,
      /* In the 9P logic, this situation just mean "end of directory reached */
      if( cache_status != CACHE_INODE_NOT_FOUND )
        return _9p_rerror( preq9p, msgtag, _9p_tools_errno( cache_status ), plenout, preply ) ;
-     else 
-       num_entries = 0 ;
    }
-
-  /* Never go behind _9P_MAXDIRCOUNT */
-  if( num_entries > _9P_MAXDIRCOUNT ) num_entries = _9P_MAXDIRCOUNT ;
 
   /* Build the reply */
   _9p_setinitptr( cursor, preply, _9P_RREADDIR ) ;
@@ -298,7 +295,7 @@ int _9p_readdir( _9p_request_data_t * preq9p,
   _9p_savepos( cursor, dcount_pos, u32 ) ;
 
   /* fills in the dentry in 9P marshalling */
-  for( i = 0 ; i < num_entries + delta ; i++ )
+  for( i = 0 ; i < cb_data.count ; i++ )
    {
      recsize = 0 ;
 
