@@ -1,7 +1,4 @@
-AM_CFLAGS                     = $(FSAL_CFLAGS) $(SEC_CFLAGS)
-
-#noinst_LTLIBRARIES          = libfsaldmlite.la
-lib_LTLIBRARIES          = libfsaldmlite.la
+lib_LTLIBRARIES           = libfsaldmlite.la
 
 libfsaldmlite_la_SOURCES = fsal_convert.c   \
                         fsal_internal.c	 \
@@ -15,8 +12,10 @@ libfsaldmlite_la_SOURCES = fsal_convert.c   \
 	                ../../include/fsal.h                     \
                         ../../include/fsal_types.h	         \
 	                ../../include/err_fsal.h	         \
-	                ../../include/FSAL/FSAL_DMLITE/fsal_types.h \
-	                ../../include/FSAL/FSAL_DMLITE/fsal_handle_syscalls.h
+	                ../../include/FSAL/FSAL_DMLITE/fsal_types.h
+
+libfsaldmlite_la_CFLAGS                = $(FSAL_CFLAGS) $(SEC_CFLAGS) @DMLITE_CFLAGS@
+libfsaldmlite_la_LDFLAGS               = @DMLITE_LDFLAGS@
+libfsaldmlite_la_LIBADD                = @DMLITE_LIB@
 
 new: clean all
-

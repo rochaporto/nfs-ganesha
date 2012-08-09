@@ -684,19 +684,31 @@ AC_SUBST(CEPH_LDFLAGS)
 AC_SUBST(CEPH_LIB)
 
 if test "$enable_fsal_dmlite" == "yes"; then
+        AC_MSG_WARN([DMLITE FSAL is enabled])
+        # DMLITE FSAL compiled with special compilation directives
+	AC_CHECK_HEADERS([dmlite/c/dmlite.h], [], [AC_MSG_ERROR(missing dmlite include files)])
+        AC_CHECK_LIB([dmlite], [dmlite_manager_new],, AC_MSG_ERROR([libdmlite not found]))
+        AC_DEFINE(_DMLITE, 1, [dmlite is enabled])
 	AC_DEFINE([_USE_DMLITE], 1, [GANESHA exports DMLITE Filesystem])
-	AC_CHECK_HEADERS([dmlite/c/dmlite.h], [], [AC_MSG_ERROR( missing dmlite include files)])
-	CFLAGS="${CFLAGS}"
-	FSAL_CFLAGS=""
-	LDFLAGS=""
-	FSAL_LDFLAGS=-ldmlite
+
 	if test \( "x$enable_pnfs_mds" = "xyes" \) -o \( "x$enable_pnfs_ds" = "xyes" \); then
 		FSALPNFS_LIB="\$(top_builddir)/FSAL/FSAL_DMLITE/libfsalpnfsdmlite.la"
 	else
 		FSALPNFS_LIB=""
 	fi
-	FSAL_LIB="\$(top_builddir)/FSAL/FSAL_DMLITE/libfsaldmlite.la"
+
+        DMLITE_CFLAGS=
+        DMLITE_LDFLAGS=
+        DMLITE_LIB="-ldmlite"
+else
+        DMLITE_CFLAGS=
+        DMLITE_LDFLAGS=
+        DMLITE_LIB=
 fi
+
+AC_SUBST(DMLITE_CFLAGS)
+AC_SUBST(DMLITE_LDFLAGS)
+AC_SUBST(DMLITE_LIB)
 
 if test "$enable_fsal_gpfs" == "yes"; then
 	AC_DEFINE([_USE_GPFS], 1, [GANESHA exports GPFS Filesystem])
